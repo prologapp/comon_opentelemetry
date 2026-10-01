@@ -127,6 +127,32 @@ void defineErrorScrubTests() {
       final once = scrubUrls('x $_leakyUrl y');
       expect(scrubUrls(once), once);
     });
+
+    test('runs in linear time on a long scheme-like run before a URL', () {
+      // Entrada patológica: 64 KB de caracteres válidos de esquema que não
+      // terminam em `://`, seguidos de uma URL real (o `://` existe, então o
+      // atalho de `contains` não se aplica). Com o esquema sem limite, cada
+      // posição inicial varre o resto da sequência: O(n²), ~2,6 s medidos.
+      final input = '${'a' * 65536} x https://h/p?sig=1';
+
+      final stopwatch = Stopwatch()..start();
+      final output = scrubUrls(input);
+      stopwatch.stop();
+
+      expect(output, endsWith(' x https://h/…'));
+      expect(stopwatch.elapsed, lessThan(const Duration(milliseconds: 200)));
+    });
+
+    test('still drops path and query when the scheme exceeds 32 chars', () {
+      final input = '${'a' * 40}://host/x?sig=1';
+
+      final output = scrubUrls(input);
+
+      expect(output, isNot(contains('sig=1')));
+      expect(output, isNot(contains('/x')));
+      expect(output, endsWith('://host/…'));
+      expect(scrubUrls(output), output);
+    });
   });
 
   group('error text never carries a URL path or query', () {

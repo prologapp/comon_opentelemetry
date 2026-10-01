@@ -3,8 +3,14 @@ import 'semantic_attributes.dart';
 /// Matches `scheme://authority` plus everything after it up to the next
 /// whitespace or quote. Over-consuming trailing text is safe (it is dropped);
 /// under-consuming would leak path or query.
+///
+/// O esquema é limitado a 32 caracteres: sem limite, uma sequência longa de
+/// `[A-Za-z0-9+.-]` que não termina em `://` faz cada posição inicial varrer
+/// o resto da sequência (O(n²); 64 KB levavam ~2,6 s, e isto roda antes do
+/// corte de 4 KiB). Com o limite, um esquema maior que 32 caracteres casa só
+/// nos últimos 32; path e query continuam descartados.
 final RegExp _urlPattern = RegExp(
-  r'''([A-Za-z][A-Za-z0-9+.\-]*)://([^\s/?#"'<>`\\]*)([^\s"'<>`]*)''',
+  r'''([A-Za-z][A-Za-z0-9+.\-]{0,31})://([^\s/?#"'<>`\\]*)([^\s"'<>`]*)''',
 );
 
 /// Replaces every URL in [text] with its scheme and host only.
