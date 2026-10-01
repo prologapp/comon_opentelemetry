@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:comon_otel/comon_otel.dart';
 import 'package:comon_otel/src/core/otel_session.dart';
@@ -18,6 +19,7 @@ part 'src/batch_processor_health_tests.dart';
 part 'src/session_tests.dart';
 part 'src/metric_aggregation_tests.dart';
 part 'src/export_resilience_tests.dart';
+part 'src/id_generation_tests.dart';
 
 late InMemorySpanExporter exporter;
 late InMemoryMetricExporter metricExporter;
@@ -57,5 +59,6 @@ void main() {
     defineSessionTests();
     defineMetricAggregationTests();
     defineExportResilienceTests();
+    defineIdGenerationTests();
   });
 }
