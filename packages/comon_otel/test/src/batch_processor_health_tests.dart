@@ -257,5 +257,61 @@ void defineBatchProcessorHealthTests() {
       expect(processor.queueLength, 0);
       await processor.shutdown();
     });
+    test(
+      'span timer ticks do not queue flushes behind a slow export',
+      () async {
+        final gated = _GatedSpanExporter();
+        final processor = BatchSpanProcessor(
+          exporter: gated,
+          maxBatchSize: 1000,
+          maxQueueSize: 1000,
+          scheduleDelay: const Duration(milliseconds: 10),
+        );
+        final tracer = TracerProvider(
+          resource: Resource.empty(),
+          spanProcessors: <SpanProcessor>[processor],
+          sampler: const AlwaysOnSampler(),
+        ).getTracer('t');
+
+        await tracer.startSpan('first').end();
+        // ~20 ticks while the first timer export is stuck.
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        await tracer.startSpan('second').end();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(gated.batchSizes, <int>[1]);
+        expect(processor.queuedFlushCount, lessThanOrEqualTo(1));
+
+        gated.gate.complete();
+        await processor.shutdown();
+        expect(gated.batchSizes.fold<int>(0, (a, b) => a + b), 2);
+      },
+    );
+
+    test('log timer ticks do not queue flushes behind a slow export', () async {
+      final gated = _GatedLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: gated,
+        maxBatchSize: 1000,
+        maxQueueSize: 1000,
+        scheduleDelay: const Duration(milliseconds: 10),
+      );
+      final logger = LoggerProvider(
+        resource: Resource.empty(),
+        logProcessors: <LogProcessor>[processor],
+      ).getLogger('l');
+
+      logger.info('first');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      logger.info('second');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(gated.batchSizes, <int>[1]);
+      expect(processor.queuedFlushCount, lessThanOrEqualTo(1));
+
+      gated.gate.complete();
+      await processor.shutdown();
+      expect(gated.batchSizes.fold<int>(0, (a, b) => a + b), 2);
+    });
   });
 }

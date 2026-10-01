@@ -18,6 +18,12 @@ final class BatchSpanProcessor implements SpanProcessor {
     this.onDrop,
   }) : _exporter = exporter {
     _timer = Timer.periodic(scheduleDelay, (_) {
+      // Skip the tick while a flush is queued or running: it will export
+      // what is queued, and queueing one cycle per tick behind a slow export
+      // would only grow the flush chain.
+      if (_queuedFlushes > 0) {
+        return;
+      }
       unawaited(_flushBatch());
     });
   }
