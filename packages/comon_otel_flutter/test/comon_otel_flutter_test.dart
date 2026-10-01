@@ -1175,6 +1175,54 @@ void main() {
     },
   );
 
+  testWidgets(
+    'ui stall poller ignores wall-clock jumps (measures on the monotonic clock)',
+    (tester) async {
+      var wallClock = DateTime.utc(2026, 3, 20, 12, 0, 0);
+      var monotonic = Duration.zero;
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final observer = OtelFlutterUiStallObserver(
+        checkInterval: const Duration(milliseconds: 50),
+        threshold: const Duration(milliseconds: 100),
+        now: () => wallClock,
+        elapsed: () => monotonic,
+      )..start();
+      expect(observer.isPolling, isTrue);
+
+      Future<void> healthyTick() async {
+        monotonic += const Duration(milliseconds: 50);
+        wallClock = wallClock.add(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+
+      List<LogRecord> stallLogs() => logExporter.logs
+          .where((log) => log.body == 'flutter.ui_stall')
+          .toList();
+
+      await healthyTick();
+      // Wall clock jumps forward 30 min (NTP / user change) while the UI
+      // thread stays healthy: the monotonic clock only moves one interval.
+      wallClock = wallClock.add(const Duration(minutes: 30));
+      await healthyTick();
+      // ...and back again.
+      wallClock = wallClock.subtract(const Duration(minutes: 30));
+      await healthyTick();
+      await healthyTick();
+      await Otel.forceFlush();
+      expect(stallLogs(), isEmpty, reason: 'a wall-clock jump is not a stall');
+
+      // Positive control: a real 300 ms stall on the monotonic clock only.
+      monotonic += const Duration(milliseconds: 350);
+      await tester.pump(const Duration(milliseconds: 50));
+      await Otel.forceFlush();
+      expect(stallLogs(), hasLength(1));
+      expect(stallLogs().single.attributes['flutter.ui_stall.delay_ms'], 300.0);
+
+      observer.dispose();
+    },
+  );
+
   testWidgets('ui stall timer never starts without a resumed lifecycle', (
     tester,
   ) async {
