@@ -615,5 +615,54 @@ void defineExportResilienceTests() {
       exporter.release.complete();
       await reader.shutdown();
     });
+    test('shutdown lets an in-flight export finish before closing', () async {
+      final exporter = _FirstExportBlockingMetricExporter();
+      final reader = PeriodicMetricReader(
+        exporter: exporter,
+        interval: const Duration(milliseconds: 20),
+        inFlightWaitLimit: const Duration(seconds: 2),
+      );
+      MeterProvider(
+        resource: Resource.empty(),
+        readers: <MetricReader>[reader],
+      ).getMeter('m').createIntCounter('c.shutdown').add(1);
+      await _waitFor(() => exporter.calls == 1);
+
+      unawaited(
+        Future<void>.delayed(
+          const Duration(milliseconds: 100),
+          exporter.release.complete,
+        ),
+      );
+      await reader.shutdown().timeout(const Duration(seconds: 3));
+
+      expect(exporter.events, <String>[
+        'export1-start',
+        'export1-done',
+        'shutdown',
+      ]);
+    });
+
+    test('shutdown waits a bounded time for a stuck export', () async {
+      final exporter = _FirstExportBlockingMetricExporter();
+      final reader = PeriodicMetricReader(
+        exporter: exporter,
+        interval: const Duration(milliseconds: 20),
+        inFlightWaitLimit: const Duration(milliseconds: 200),
+      );
+      MeterProvider(
+        resource: Resource.empty(),
+        readers: <MetricReader>[reader],
+      ).getMeter('m').createIntCounter('c.stuck').add(1);
+      await _waitFor(() => exporter.calls == 1);
+
+      final stopwatch = Stopwatch()..start();
+      await reader.shutdown().timeout(const Duration(seconds: 3));
+      stopwatch.stop();
+
+      expect(stopwatch.elapsed, greaterThan(const Duration(milliseconds: 150)));
+      expect(exporter.events.last, 'shutdown');
+      exporter.release.complete();
+    });
   });
 }

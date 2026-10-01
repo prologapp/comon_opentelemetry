@@ -171,12 +171,17 @@ final class PeriodicMetricReader implements MetricReader {
 
   @override
   /// Stops periodic collection and shuts down the exporter.
+  ///
+  /// An export already in flight gets up to [inFlightWaitLimit] to finish
+  /// before the exporter is shut down, so the last batch is not cut off;
+  /// no new cycle starts once shutdown begins.
   Future<void> shutdown() async {
     if (_isShutdown) {
       return;
     }
     _isShutdown = true;
     _timer?.cancel();
+    await _waitForIdle();
     await exporter.shutdown();
   }
 }
