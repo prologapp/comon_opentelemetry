@@ -395,6 +395,7 @@ void main() {
           markFirstFrame: false,
         ),
       );
+      addTearDown(instrumentation.dispose);
       final tracker = instrumentation.startupTracker!;
 
       await Otel.shutdown();
@@ -420,6 +421,7 @@ void main() {
         markFirstFrame: false,
       ),
     );
+    addTearDown(instrumentation.dispose);
 
     expect(instrumentation.startupTracker, isNull);
   });
@@ -949,6 +951,128 @@ void main() {
       expect(stallLog.attributes['flutter.ui_stall.delay_ms'], 150.0);
     },
   );
+
+  test(
+    'ui stall metrics keep a constant series count regardless of stall delays',
+    () async {
+      final observer = OtelFlutterUiStallObserver(
+        checkInterval: const Duration(milliseconds: 50),
+        threshold: const Duration(milliseconds: 100),
+        staticAttributes: const <String, Object>{'device.tier': 'low'},
+      );
+      var at = DateTime.utc(2026, 3, 20, 12, 0, 0);
+      observer.recordTick(at);
+      final delaysMs = <int>[];
+      for (var i = 0; i < 25; i++) {
+        final delayMs = 150 + i * 37;
+        delaysMs.add(delayMs);
+        at = at.add(Duration(milliseconds: 50 + delayMs));
+        observer.recordTick(at);
+      }
+      await Otel.forceFlush();
+
+      final durationMetric = metricExporter.lastMetricNamed(
+        'flutter.ui.stall.duration',
+      )!;
+      final countMetric = metricExporter.lastMetricNamed(
+        'flutter.ui.stall.count',
+      )!;
+      // One attribute set per instrument, no matter how many distinct
+      // delays: the delay is the histogram VALUE, never a label.
+      expect(durationMetric.points, hasLength(1));
+      expect(countMetric.points, hasLength(1));
+      expect(durationMetric.points.single.count, delaysMs.length);
+      expect(
+        durationMetric.points.single.sum,
+        closeTo(delaysMs.fold<int>(0, (a, b) => a + b), 0.001),
+      );
+      expect(countMetric.points.single.value, delaysMs.length);
+      expect(
+        durationMetric.points.single.attributes,
+        const <String, Object>{'device.tier': 'low'},
+      );
+
+      // The per-stall detail stays available on the log record.
+      final stallLogs = logExporter.logs.where(
+        (log) => log.body == 'flutter.ui_stall',
+      );
+      expect(stallLogs, hasLength(delaysMs.length));
+      expect(stallLogs.first.attributes['flutter.ui_stall.delay_ms'], 150.0);
+    },
+  );
+
+  testWidgets(
+    'ui stall timer only measures while resumed (no false stall after a freeze)',
+    (tester) async {
+      var wallClock = DateTime.utc(2026, 3, 20, 12, 0, 0);
+      var monotonic = Duration.zero;
+      void advance(Duration by) {
+        wallClock = wallClock.add(by);
+        monotonic += by;
+      }
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final observer = OtelFlutterUiStallObserver(
+        checkInterval: const Duration(milliseconds: 50),
+        threshold: const Duration(milliseconds: 100),
+        now: () => wallClock,
+        elapsed: () => monotonic,
+      )..start();
+
+      Future<void> healthyTicks(int count) async {
+        for (var i = 0; i < count; i++) {
+          advance(const Duration(milliseconds: 50));
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+      }
+
+      await healthyTicks(3);
+      // Positive control: a real 300 ms stall while resumed is recorded.
+      advance(const Duration(milliseconds: 350));
+      await tester.pump(const Duration(milliseconds: 50));
+      await healthyTicks(3);
+
+      // App goes to background and the process is frozen for 30 minutes; the
+      // timer may still get a late tick when the process thaws.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      advance(const Duration(minutes: 30));
+      await tester.pump(const Duration(milliseconds: 50));
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await healthyTicks(3);
+
+      observer.dispose();
+      await Otel.forceFlush();
+
+      final stallLogs = logExporter.logs
+          .where((log) => log.body == 'flutter.ui_stall')
+          .toList();
+      expect(stallLogs, hasLength(1));
+      expect(stallLogs.single.attributes['flutter.ui_stall.delay_ms'], 300.0);
+    },
+  );
+
+  testWidgets('ui stall timer never starts without a resumed lifecycle', (
+    tester,
+  ) async {
+    // Headless isolates (e.g. WorkManager) never report a lifecycle state.
+    expect(tester.binding.lifecycleState, isNull);
+    final observer = OtelFlutterUiStallObserver(elapsed: () => Duration.zero)
+      ..start();
+    expect(observer.isPolling, isFalse);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    expect(observer.isPolling, isTrue);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    expect(observer.isPolling, isFalse);
+
+    observer.dispose();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    expect(observer.isPolling, isFalse);
+  });
 
   test('flutter framework errors are recorded as telemetry', () async {
     final instrumentation = ComonOtelFlutter.install(

@@ -99,7 +99,7 @@ final class ComonOtelFlutter {
       resolvedBinding.addTimingsCallback(frameTimingObserver.onFrameTimings);
     }
 
-    uiStallObserver?.start();
+    uiStallObserver?.start(binding: resolvedBinding);
 
     final resourceObserver =
         (config.trackBatteryMetrics ||
