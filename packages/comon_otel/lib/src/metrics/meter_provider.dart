@@ -76,7 +76,7 @@ final class MeterProvider {
         // the other instruments from being collected.
       }
     }
-    return List<MetricData>.unmodifiable(collected);
+    return collected.toList(growable: false);
   }
 
   /// Flushes all attached metric readers.
