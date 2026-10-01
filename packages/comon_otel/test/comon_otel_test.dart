@@ -17,6 +17,7 @@ part 'src/http_transport_tests.dart';
 part 'src/batch_processor_health_tests.dart';
 part 'src/session_tests.dart';
 part 'src/metric_aggregation_tests.dart';
+part 'src/export_resilience_tests.dart';
 
 late InMemorySpanExporter exporter;
 late InMemoryMetricExporter metricExporter;
@@ -55,5 +56,6 @@ void main() {
     defineBatchProcessorHealthTests();
     defineSessionTests();
     defineMetricAggregationTests();
+    defineExportResilienceTests();
   });
 }

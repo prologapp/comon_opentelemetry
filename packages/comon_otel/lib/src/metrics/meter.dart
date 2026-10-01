@@ -309,6 +309,11 @@ final class _CounterMetric<T extends num>
 
   @override
   void add(T value, {Map<String, Object>? attributes}) {
+    // NaN/Infinity would poison the cumulative sum for the rest of the
+    // process (and cannot be represented as a JSON number): drop it.
+    if (!value.isFinite) {
+      return;
+    }
     if (!allowNegative && value < 0) {
       throw ArgumentError.value(value, 'value', 'Counter values must be >= 0.');
     }
@@ -387,6 +392,11 @@ final class _HistogramMetric<T extends num>
 
   @override
   void record(T value, {Map<String, Object>? attributes}) {
+    // NaN/Infinity would poison sum/min/max for the rest of the process (and
+    // cannot be represented as a JSON number): drop the measurement.
+    if (!value.isFinite) {
+      return;
+    }
     final now = DateTime.now().toUtc();
     final resolvedAttributes = _resolveRetainedAttributes(
       attributes: _normalizeMetricAttributes(attributes),
