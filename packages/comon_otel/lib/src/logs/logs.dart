@@ -1,6 +1,7 @@
 library;
 
 export 'batch_log_processor.dart';
+export 'log_limits.dart';
 export 'log_processor.dart';
 export 'log_record.dart';
 export 'logger_provider.dart';

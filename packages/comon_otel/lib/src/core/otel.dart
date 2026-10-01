@@ -18,6 +18,7 @@ import '../exporters/otlp/protobuf/http_protobuf_metric_exporter.dart';
 import '../exporters/otlp/protobuf/http_protobuf_span_exporter.dart';
 import '../exporters/otlp/grpc/grpc_transport.dart';
 import '../exporters/otlp/common/http_transport.dart';
+import '../logs/log_limits.dart';
 import '../logs/log_processor.dart';
 import '../logs/logger_provider.dart';
 import '../logs/otel_logger.dart';
@@ -97,6 +98,7 @@ final class Otel {
     SamplerConfig? sampler,
     Map<String, Object>? resourceAttributes,
     SpanLimits spanLimits = const SpanLimits(),
+    LogLimits logLimits = const LogLimits(),
     bool? useBatchSpanProcessor,
     Duration? batchSpanProcessorScheduleDelay,
     Duration? batchSpanProcessorExportTimeout,
@@ -223,6 +225,7 @@ final class Otel {
       sampler: resolvedSampler,
       resourceAttributes: resolvedResourceAttributes,
       spanLimits: resolvedSpanLimits,
+      logLimits: logLimits,
       useBatchSpanProcessor:
           useBatchSpanProcessor ?? OtelEnvConfig.hasBspConfig,
       batchSpanProcessorScheduleDelay:
@@ -309,6 +312,7 @@ final class Otel {
 
     final loggerProvider = LoggerProvider(
       resource: resource,
+      logLimits: config.logLimits,
       logProcessors: resolvedSdkDisabled
           ? const <LogProcessor>[]
           : _buildLogProcessors(config),
@@ -570,6 +574,7 @@ final class Otel {
           ? (OtelEnvConfig.linkAttributeCountLimit ??
                 spanLimits.attributePerLinkCountLimit)
           : spanLimits.attributePerLinkCountLimit,
+      attributeValueLengthLimit: spanLimits.attributeValueLengthLimit,
     );
   }
 

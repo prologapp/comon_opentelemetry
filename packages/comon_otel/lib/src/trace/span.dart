@@ -1,3 +1,4 @@
+import '../core/attribute_value_limit.dart';
 import '../core/instrumentation_scope.dart';
 import '../core/semantic_attributes.dart';
 import '../core/url_scrubber.dart';
@@ -138,6 +139,9 @@ final class Span {
 
   /// Sets a single span attribute if the span is still recording.
   ///
+  /// String values longer than [SpanLimits.attributeValueLengthLimit] are
+  /// truncated (see [attributeValueTruncationMarker]).
+  ///
   /// Counts against [SpanLimits.attributeCountLimit] like any user
   /// attribute. Reserved keys set via [setReservedAttribute] are excluded
   /// from that count, so they never crowd out — or get crowded out by —
@@ -160,7 +164,7 @@ final class Span {
       return;
     }
 
-    _attributes[key] = scrubExceptionAttribute(key, value);
+    _attributes[key] = _limitValue(key, value);
   }
 
   /// Sets a single span attribute reserved for SDK-internal identity data
@@ -275,7 +279,12 @@ final class Span {
       return;
     }
     _status = status;
-    _statusDescription = description == null ? null : scrubUrls(description);
+    _statusDescription = description == null
+        ? null
+        : truncateValue(
+            scrubUrls(description),
+            _limits.attributeValueLengthLimit,
+          );
   }
 
   /// Replaces the span name while the span is still recording.
@@ -351,6 +360,13 @@ final class Span {
     return SpanLink(context: link.context, attributes: sanitized.attributes);
   }
 
+  /// Scrubs exception text, then applies
+  /// [SpanLimits.attributeValueLengthLimit].
+  Object _limitValue(String key, Object value) => limitAttributeValue(
+    scrubExceptionAttribute(key, value),
+    _limits.attributeValueLengthLimit,
+  );
+
   _LimitedAttributes _limitAttributes(
     Map<String, Object> attributes,
     int limit,
@@ -363,7 +379,7 @@ final class Span {
         droppedCount += 1;
         continue;
       }
-      limited[entry.key] = scrubExceptionAttribute(entry.key, entry.value);
+      limited[entry.key] = _limitValue(entry.key, entry.value);
     }
 
     return _LimitedAttributes(

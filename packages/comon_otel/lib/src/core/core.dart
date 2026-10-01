@@ -1,5 +1,6 @@
 library;
 
+export 'attribute_value_limit.dart' show attributeValueTruncationMarker;
 export 'instrumentation_scope.dart';
 export 'otel.dart';
 export 'otel_config.dart';

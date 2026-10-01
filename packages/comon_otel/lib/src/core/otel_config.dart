@@ -3,6 +3,7 @@ import '../context/propagation/text_map_propagator.dart';
 import '../exporters/otlp/common/export_retry.dart';
 import '../exporters/otlp/grpc/grpc_transport.dart';
 import '../exporters/otlp/common/http_transport.dart';
+import '../logs/log_limits.dart';
 import '../logs/log_processor.dart';
 import '../metrics/metric_reader.dart';
 import '../trace/sampler.dart';
@@ -31,6 +32,7 @@ final class OtelConfig {
     this.sampler,
     this.resourceAttributes = const <String, Object>{},
     this.spanLimits = const SpanLimits(),
+    this.logLimits = const LogLimits(),
     this.useBatchSpanProcessor = false,
     this.batchSpanProcessorScheduleDelay,
     this.batchSpanProcessorExportTimeout,
@@ -108,6 +110,9 @@ final class OtelConfig {
 
   /// Limits applied to span attributes, events, and links.
   final SpanLimits spanLimits;
+
+  /// Limits applied to log record attributes and bodies.
+  final LogLimits logLimits;
 
   /// Whether to add the built-in batch span processor.
   final bool useBatchSpanProcessor;
