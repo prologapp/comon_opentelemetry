@@ -174,11 +174,19 @@ final class OtelDioInterceptor extends Interceptor {
         }
         final shouldRecordException = statusCode == null || statusCode >= 500;
         if (shouldRecordException) {
-          span.recordException(err, stackTrace: err.stackTrace);
-          span.setStatus(
-            SpanStatus.error,
-            description: err.message ?? err.toString(),
+          // Never put err.toString()/err.message/err.error into the span:
+          // Dio embeds the full request URL there (path PII such as CPF,
+          // pre-signed query signatures). Only the closed-set error type is
+          // exported.
+          final errorType = err.type.name;
+          span.recordException(
+            err,
+            stackTrace: err.stackTrace,
+            attributes: <String, Object>{
+              SemanticAttributes.exceptionMessage: 'DioException[$errorType]',
+            },
           );
+          span.setStatus(SpanStatus.error, description: errorType);
         } else {
           _applyHttpStatus(span, statusCode);
         }
