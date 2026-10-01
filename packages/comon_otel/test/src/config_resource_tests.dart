@@ -1164,11 +1164,12 @@ void defineConfigAndResourceTests() {
         endpoint: 'https://collector.example.com',
         exporter: OtelExporter.otlpHttpJson,
         otlpTransport: transport,
+        // Retry-After is honored up to maxDelay (see the capped test below).
         otlpRetry: const OtlpRetryConfig(
           maxAttempts: 2,
           initialDelay: Duration.zero,
           backoffMultiplier: 1,
-          maxDelay: Duration.zero,
+          maxDelay: Duration(seconds: 2),
         ),
         metricReaders: const <MetricReader>[],
         logProcessors: const <LogProcessor>[],

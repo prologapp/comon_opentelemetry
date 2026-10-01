@@ -21,7 +21,7 @@ final class OtlpRetryConfig {
   /// Multiplier applied after each failed attempt.
   final double backoffMultiplier;
 
-  /// Upper bound for exponential backoff.
+  /// Upper bound for exponential backoff and for a server `Retry-After`.
   final Duration maxDelay;
 }
 
@@ -48,9 +48,12 @@ Future<ExportResult> executeOtlpExportWithRetry({
         return ExportResult.failure;
       }
 
+      // Honor Retry-After only up to maxDelay: an unbounded value (up to
+      // 86400 s) would freeze this signal's export chain, fill its queue
+      // and hold any flush the host awaits (e.g. when the app is paused).
       final retryAfter = response.retryAfter;
       if (retryAfter != null) {
-        delay = retryAfter;
+        delay = retryAfter > retry.maxDelay ? retry.maxDelay : retryAfter;
       }
     } catch (_) {
       if (attempt >= retry.maxAttempts) {

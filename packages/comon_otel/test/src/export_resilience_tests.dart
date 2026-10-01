@@ -256,5 +256,30 @@ void defineExportResilienceTests() {
       expect(spans.forceFlushCount, 1);
       expect(logs.forceFlushCount, 1);
     });
+    test('Retry-After is capped at the retry maxDelay', () async {
+      final transport = _SequencedOtlpHttpTransport(<Object>[
+        const OtlpHttpResponse(
+          statusCode: 503,
+          headers: <String, String>{'retry-after': '3600'},
+        ),
+        const OtlpHttpResponse(statusCode: 200, body: '{}'),
+      ]);
+      final exporter = OtlpHttpJsonSpanExporter(
+        endpoint: 'https://collector.example.com',
+        transport: transport,
+        retry: const OtlpRetryConfig(
+          maxAttempts: 2,
+          initialDelay: Duration.zero,
+          maxDelay: Duration(milliseconds: 50),
+        ),
+      );
+
+      final result = await exporter
+          .export(const <SpanData>[])
+          .timeout(const Duration(seconds: 5));
+
+      expect(result, ExportResult.success);
+      expect(transport.requests, hasLength(2));
+    });
   });
 }
