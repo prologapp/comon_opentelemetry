@@ -133,9 +133,44 @@ void main() {
       contains('flutter.first_frame'),
     );
     expect(startupSpan.attributes['flutter.startup.completed'], true);
+    expect(
+      logExporter.logs.where((log) => log.body == 'app.first_frame'),
+      hasLength(1),
+    );
 
     instrumentation.dispose();
   });
+
+  test(
+    'completeStartup with markFirstFrame:false emits no first-frame marker',
+    () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+        ),
+      );
+      addTearDown(instrumentation.dispose);
+
+      // Closed explicitly by the host (not at the first frame).
+      await instrumentation.startupTracker!.completeStartup();
+      await Otel.forceFlush();
+
+      final rootSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'app.startup',
+      );
+      expect(rootSpan.attributes['flutter.startup.completed'], true);
+      expect(
+        rootSpan.events.map((event) => event.name),
+        isNot(contains('flutter.first_frame')),
+      );
+      expect(
+        logExporter.logs.where((log) => log.body == 'app.first_frame'),
+        isEmpty,
+      );
+    },
+  );
 
   test('startPhase creates a child span of the startup root', () async {
     final instrumentation = ComonOtelFlutter.install(
