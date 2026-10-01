@@ -195,49 +195,49 @@ void main() {
     final exportedPhaseSpan = spanExporter.spans.singleWhere(
       (span) => span.name == 'app.startup.di',
     );
-    expect(exportedPhaseSpan.parentSpanContext?.spanId, rootSpan.spanContext.spanId);
+    expect(
+      exportedPhaseSpan.parentSpanContext?.spanId,
+      rootSpan.spanContext.spanId,
+    );
 
     instrumentation.dispose();
   });
 
-  test(
-    'trackPhase records a span and a histogram sample on success',
-    () async {
-      final instrumentation = ComonOtelFlutter.install(
-        config: const ComonOtelFlutterConfig(
-          observeAppLifecycle: false,
-          trackNavigatorRoutes: false,
-          markFirstFrame: false,
-        ),
-      );
+  test('trackPhase records a span and a histogram sample on success', () async {
+    final instrumentation = ComonOtelFlutter.install(
+      config: const ComonOtelFlutterConfig(
+        observeAppLifecycle: false,
+        trackNavigatorRoutes: false,
+        markFirstFrame: false,
+      ),
+    );
 
-      final result = await instrumentation.startupTracker!.trackPhase<int>(
-        'firebase',
-        () async {
-          await Future<void>.delayed(const Duration(milliseconds: 5));
-          return 42;
-        },
-      );
-      await Otel.forceFlush();
+    final result = await instrumentation.startupTracker!.trackPhase<int>(
+      'firebase',
+      () async {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        return 42;
+      },
+    );
+    await Otel.forceFlush();
 
-      expect(result, 42);
-      final phaseSpan = spanExporter.spans.singleWhere(
-        (span) => span.name == 'app.startup.firebase',
-      );
-      expect(phaseSpan.attributes['app.startup.phase'], 'firebase');
-      expect(phaseSpan.status, SpanStatus.ok);
+    expect(result, 42);
+    final phaseSpan = spanExporter.spans.singleWhere(
+      (span) => span.name == 'app.startup.firebase',
+    );
+    expect(phaseSpan.attributes['app.startup.phase'], 'firebase');
+    expect(phaseSpan.status, SpanStatus.ok);
 
-      final histogram = metricExporter.lastMetricNamed(
-        'app.startup.phase.duration',
-      );
-      expect(histogram, isNotNull);
-      final point = histogram!.points.single;
-      expect(point.count, 1);
-      expect(point.attributes['app.startup.phase'], 'firebase');
+    final histogram = metricExporter.lastMetricNamed(
+      'app.startup.phase.duration',
+    );
+    expect(histogram, isNotNull);
+    final point = histogram!.points.single;
+    expect(point.count, 1);
+    expect(point.attributes['app.startup.phase'], 'firebase');
 
-      instrumentation.dispose();
-    },
-  );
+    instrumentation.dispose();
+  });
 
   test(
     'trackPhase records the error status and histogram, then rethrows',
@@ -302,9 +302,7 @@ void main() {
 
       expect(result, 7);
       expect(
-        spanExporter.spans.any(
-          (span) => span.name == 'app.startup.migrations',
-        ),
+        spanExporter.spans.any((span) => span.name == 'app.startup.migrations'),
         isFalse,
       );
 
@@ -421,9 +419,7 @@ void main() {
       await Otel.forceFlush();
 
       expect(
-        spanExporter.spans.any(
-          (span) => span.name == 'app.startup.migrations',
-        ),
+        spanExporter.spans.any((span) => span.name == 'app.startup.migrations'),
         isFalse,
       );
 
@@ -465,71 +461,80 @@ void main() {
     },
   );
 
-  test('startPhase and trackPhase are no-ops when Otel is not initialized', () async {
-    await Otel.shutdown();
+  test(
+    'startPhase and trackPhase are no-ops when Otel is not initialized',
+    () async {
+      await Otel.shutdown();
 
-    final instrumentation = ComonOtelFlutter.install(
-      config: const ComonOtelFlutterConfig(
-        observeAppLifecycle: false,
-        trackNavigatorRoutes: false,
-        markFirstFrame: false,
-      ),
-    );
-    addTearDown(instrumentation.dispose);
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+        ),
+      );
+      addTearDown(instrumentation.dispose);
 
-    expect(instrumentation.startupTracker, isNull);
-  });
+      expect(instrumentation.startupTracker, isNull);
+    },
+  );
 
-  test('setStartupAttribute sets the value on the root span before end, is a no-op after', () async {
-    final instrumentation = ComonOtelFlutter.install(
-      config: const ComonOtelFlutterConfig(
-        observeAppLifecycle: false,
-        trackNavigatorRoutes: false,
-        markFirstFrame: false,
-      ),
-    );
+  test(
+    'setStartupAttribute sets the value on the root span before end, is a no-op after',
+    () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+        ),
+      );
 
-    instrumentation.startupTracker!.setStartupAttribute(
-      'launch.source',
-      'push',
-    );
-    await instrumentation.startupTracker!.completeStartup();
-    // No-op after end: must not throw, and must not overwrite what was
-    // already recorded on the (now ended) root span.
-    instrumentation.startupTracker!.setStartupAttribute(
-      'launch.source',
-      'normal',
-    );
-    await Otel.forceFlush();
+      instrumentation.startupTracker!.setStartupAttribute(
+        'launch.source',
+        'push',
+      );
+      await instrumentation.startupTracker!.completeStartup();
+      // No-op after end: must not throw, and must not overwrite what was
+      // already recorded on the (now ended) root span.
+      instrumentation.startupTracker!.setStartupAttribute(
+        'launch.source',
+        'normal',
+      );
+      await Otel.forceFlush();
 
-    final startupSpan = spanExporter.spans.singleWhere(
-      (span) => span.name == 'app.startup',
-    );
-    expect(startupSpan.attributes['launch.source'], 'push');
+      final startupSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'app.startup',
+      );
+      expect(startupSpan.attributes['launch.source'], 'push');
 
-    instrumentation.dispose();
-  });
+      instrumentation.dispose();
+    },
+  );
 
-  test('appStartupAttributes are present on the root span from creation', () async {
-    final instrumentation = ComonOtelFlutter.install(
-      config: const ComonOtelFlutterConfig(
-        observeAppLifecycle: false,
-        trackNavigatorRoutes: false,
-        markFirstFrame: false,
-        appStartupAttributes: <String, Object>{'launch.source': 'normal'},
-      ),
-    );
+  test(
+    'appStartupAttributes are present on the root span from creation',
+    () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+          appStartupAttributes: <String, Object>{'launch.source': 'normal'},
+        ),
+      );
 
-    await instrumentation.startupTracker!.completeStartup();
-    await Otel.forceFlush();
+      await instrumentation.startupTracker!.completeStartup();
+      await Otel.forceFlush();
 
-    final startupSpan = spanExporter.spans.singleWhere(
-      (span) => span.name == 'app.startup',
-    );
-    expect(startupSpan.attributes['launch.source'], 'normal');
+      final startupSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'app.startup',
+      );
+      expect(startupSpan.attributes['launch.source'], 'normal');
 
-    instrumentation.dispose();
-  });
+      instrumentation.dispose();
+    },
+  );
 
   test(
     'staticMetricAttributes are merged into frame, stall, and startup-phase metrics with per-record override',
@@ -552,10 +557,7 @@ void main() {
       instrumentation.uiStallObserver!.recordTick(
         DateTime.utc(2026, 1, 1, 0, 0, 1),
       );
-      await instrumentation.startupTracker!.trackPhase<void>(
-        'di',
-        () async {},
-      );
+      await instrumentation.startupTracker!.trackPhase<void>('di', () async {});
       await Otel.forceFlush();
 
       final frameMetric = metricExporter.lastMetricNamed(
@@ -667,30 +669,33 @@ void main() {
     await Otel.shutdown();
   });
 
-  test('a failing background flush never surfaces as an unhandled error', () async {
-    TestWidgetsFlutterBinding.ensureInitialized();
-    final exporter = _ThrowingFlushSpanExporter();
-    await Otel.shutdown();
-    await Otel.init(
-      serviceName: 'lifecycle-test',
-      spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
-      metricReaders: const <MetricReader>[],
-      logProcessors: const <LogProcessor>[],
-    );
+  test(
+    'a failing background flush never surfaces as an unhandled error',
+    () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final exporter = _ThrowingFlushSpanExporter();
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'lifecycle-test',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
+        metricReaders: const <MetricReader>[],
+        logProcessors: const <LogProcessor>[],
+      );
 
-    final uncaught = <Object>[];
-    await runZonedGuarded(() async {
-      final observer = OtelFlutterBindingObserver();
-      observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
-      observer.didChangeAppLifecycleState(AppLifecycleState.paused);
-      observer.didChangeAppLifecycleState(AppLifecycleState.detached);
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }, (error, stackTrace) => uncaught.add(error));
+      final uncaught = <Object>[];
+      await runZonedGuarded(() async {
+        final observer = OtelFlutterBindingObserver();
+        observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+        observer.didChangeAppLifecycleState(AppLifecycleState.detached);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }, (error, stackTrace) => uncaught.add(error));
 
-    exporter.failFlush = false;
-    await Otel.shutdown();
-    expect(uncaught, isEmpty);
-  });
+      exporter.failFlush = false;
+      await Otel.shutdown();
+      expect(uncaught, isEmpty);
+    },
+  );
 
   test('does not flush on non-backgrounding lifecycle states', () async {
     TestWidgetsFlutterBinding.ensureInitialized();
@@ -1091,10 +1096,9 @@ void main() {
         closeTo(delaysMs.fold<int>(0, (a, b) => a + b), 0.001),
       );
       expect(countMetric.points.single.value, delaysMs.length);
-      expect(
-        durationMetric.points.single.attributes,
-        const <String, Object>{'device.tier': 'low'},
-      );
+      expect(durationMetric.points.single.attributes, const <String, Object>{
+        'device.tier': 'low',
+      });
 
       // The per-stall detail stays available on the log record.
       final stallLogs = logExporter.logs.where(
@@ -1192,7 +1196,10 @@ void main() {
     expect(identical(first, second), isTrue);
 
     FlutterError.onError?.call(
-      FlutterErrorDetails(exception: StateError('once'), stack: StackTrace.current),
+      FlutterErrorDetails(
+        exception: StateError('once'),
+        stack: StackTrace.current,
+      ),
     );
     await Otel.forceFlush();
     expect(
@@ -1471,7 +1478,10 @@ void main() {
       expect(Otel.isInitialized, isTrue);
 
       expect(
-        recordFlutterPlatformError(StateError('no fallback'), StackTrace.current),
+        recordFlutterPlatformError(
+          StateError('no fallback'),
+          StackTrace.current,
+        ),
         isFalse,
         reason: 'without a fallback the engine must keep its default handling',
       );

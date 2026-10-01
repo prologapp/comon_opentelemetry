@@ -25,21 +25,18 @@ void main() {
   });
 
   group('all toggles off (AC1)', () {
-    test(
-      'install exposes no resourceObserver when every toggle is off',
-      () {
-        final instrumentation = ComonOtelFlutter.install(
-          config: const ComonOtelFlutterConfig(
-            observeAppLifecycle: false,
-            trackNavigatorRoutes: false,
-          ),
-        );
+    test('install exposes no resourceObserver when every toggle is off', () {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+        ),
+      );
 
-        expect(instrumentation.resourceObserver, isNull);
+      expect(instrumentation.resourceObserver, isNull);
 
-        instrumentation.dispose();
-      },
-    );
+      instrumentation.dispose();
+    });
 
     test('disabled signals never subscribe, record, or emit', () async {
       var thermalStreamCalled = false;
@@ -78,7 +75,10 @@ void main() {
         metricExporter.lastMetricNamed('app.device.battery.state'),
         isNull,
       );
-      expect(metricExporter.lastMetricNamed('app.device.thermal.count'), isNull);
+      expect(
+        metricExporter.lastMetricNamed('app.device.thermal.count'),
+        isNull,
+      );
       expect(metricExporter.lastMetricNamed('app.process.memory.rss'), isNull);
 
       observer.dispose();
@@ -86,32 +86,35 @@ void main() {
   });
 
   group('battery (AC2)', () {
-    test('level metric never carries the numeric level as an attribute', () async {
-      final observer = OtelFlutterResourceObserver(
-        trackBatteryMetrics: true,
-        batteryLevelGetter: () async => 42,
-        batteryStateStreamGetter: () => const Stream<String>.empty(),
-      );
+    test(
+      'level metric never carries the numeric level as an attribute',
+      () async {
+        final observer = OtelFlutterResourceObserver(
+          trackBatteryMetrics: true,
+          batteryLevelGetter: () async => 42,
+          batteryStateStreamGetter: () => const Stream<String>.empty(),
+        );
 
-      observer.start();
-      await observer.recordBatteryMoment('startup');
-      await Otel.forceFlush();
+        observer.start();
+        await observer.recordBatteryMoment('startup');
+        await Otel.forceFlush();
 
-      final metric = metricExporter.lastMetricNamed(
-        'app.device.battery.level',
-      );
-      expect(metric, isNotNull);
-      final point = metric!.points.single;
-      expect(point.value, 42.0);
-      expect(point.attributes['moment'], 'startup');
-      expect(point.attributes.containsKey('level'), isFalse);
-      expect(
-        point.attributes.values.any((value) => value == 42 || value == 42.0),
-        isFalse,
-      );
+        final metric = metricExporter.lastMetricNamed(
+          'app.device.battery.level',
+        );
+        expect(metric, isNotNull);
+        final point = metric!.points.single;
+        expect(point.value, 42.0);
+        expect(point.attributes['moment'], 'startup');
+        expect(point.attributes.containsKey('level'), isFalse);
+        expect(
+          point.attributes.values.any((value) => value == 42 || value == 42.0),
+          isFalse,
+        );
 
-      observer.dispose();
-    });
+        observer.dispose();
+      },
+    );
 
     test('state gauge exposes only the current state label', () async {
       final controller = StreamController<String>();
@@ -126,9 +129,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       await Otel.forceFlush();
 
-      final metric = metricExporter.lastMetricNamed(
-        'app.device.battery.state',
-      );
+      final metric = metricExporter.lastMetricNamed('app.device.battery.state');
       expect(metric, isNotNull);
       final point = metric!.points.single;
       expect(point.value, 1.0);
@@ -139,57 +140,52 @@ void main() {
       await controller.close();
     });
 
-    test(
-      'state gauge merges staticAttributes with the state label',
-      () async {
-        final controller = StreamController<String>();
-        final observer = OtelFlutterResourceObserver(
-          trackBatteryMetrics: true,
-          batteryLevelGetter: () async => 10,
-          batteryStateStreamGetter: () => controller.stream,
-          staticAttributes: const <String, Object>{'device.tier': 'low'},
-        );
-
-        observer.start();
-        controller.add('discharging');
-        await Future<void>.delayed(Duration.zero);
-        await Otel.forceFlush();
-
-        final metric = metricExporter.lastMetricNamed(
-          'app.device.battery.state',
-        );
-        expect(metric, isNotNull);
-        final point = metric!.points.single;
-        expect(point.attributes.keys.toSet(), <String>{
-          'state',
-          'device.tier',
-        });
-        expect(point.attributes['state'], 'discharging');
-        expect(point.attributes['device.tier'], 'low');
-
-        observer.dispose();
-        await controller.close();
-      },
-    );
-
-    test('a throwing level getter does not crash and records no point', () async {
+    test('state gauge merges staticAttributes with the state label', () async {
+      final controller = StreamController<String>();
       final observer = OtelFlutterResourceObserver(
         trackBatteryMetrics: true,
-        batteryLevelGetter: () async => throw StateError('boom'),
-        batteryStateStreamGetter: () => const Stream<String>.empty(),
+        batteryLevelGetter: () async => 10,
+        batteryStateStreamGetter: () => controller.stream,
+        staticAttributes: const <String, Object>{'device.tier': 'low'},
       );
 
       observer.start();
-      await observer.recordBatteryMoment('startup');
+      controller.add('discharging');
+      await Future<void>.delayed(Duration.zero);
       await Otel.forceFlush();
 
-      expect(
-        metricExporter.lastMetricNamed('app.device.battery.level'),
-        isNull,
-      );
+      final metric = metricExporter.lastMetricNamed('app.device.battery.state');
+      expect(metric, isNotNull);
+      final point = metric!.points.single;
+      expect(point.attributes.keys.toSet(), <String>{'state', 'device.tier'});
+      expect(point.attributes['state'], 'discharging');
+      expect(point.attributes['device.tier'], 'low');
 
       observer.dispose();
+      await controller.close();
     });
+
+    test(
+      'a throwing level getter does not crash and records no point',
+      () async {
+        final observer = OtelFlutterResourceObserver(
+          trackBatteryMetrics: true,
+          batteryLevelGetter: () async => throw StateError('boom'),
+          batteryStateStreamGetter: () => const Stream<String>.empty(),
+        );
+
+        observer.start();
+        await observer.recordBatteryMoment('startup');
+        await Otel.forceFlush();
+
+        expect(
+          metricExporter.lastMetricNamed('app.device.battery.level'),
+          isNull,
+        );
+
+        observer.dispose();
+      },
+    );
 
     test(
       'a battery-state stream error does not crash start()/dispose()',
@@ -237,9 +233,7 @@ void main() {
       }
       await Otel.forceFlush();
 
-      final metric = metricExporter.lastMetricNamed(
-        'app.device.thermal.count',
-      );
+      final metric = metricExporter.lastMetricNamed('app.device.thermal.count');
       expect(metric, isNotNull);
       final countByState = <Object?, num>{};
       for (final point in metric!.points) {
@@ -287,7 +281,10 @@ void main() {
       observer.start();
       await Otel.forceFlush();
 
-      expect(metricExporter.lastMetricNamed('app.device.thermal.count'), isNull);
+      expect(
+        metricExporter.lastMetricNamed('app.device.thermal.count'),
+        isNull,
+      );
 
       observer.dispose();
     });
@@ -311,9 +308,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       await Otel.forceFlush();
 
-      final metric = metricExporter.lastMetricNamed(
-        'app.device.thermal.count',
-      );
+      final metric = metricExporter.lastMetricNamed('app.device.thermal.count');
       // nominal -> fair is the one transition; the post-dispose 'serious'
       // must not add a second count.
       expect(metric, isNotNull);
@@ -415,9 +410,7 @@ void main() {
 
       await Otel.forceFlush();
 
-      final metric = metricExporter.lastMetricNamed(
-        'app.device.storage.free',
-      );
+      final metric = metricExporter.lastMetricNamed('app.device.storage.free');
       expect(metric, isNotNull);
       expect(metric!.points, hasLength(3));
       final bytesByMilestone = <Object?, Object?>{
@@ -446,9 +439,7 @@ void main() {
       await observer.recordStorageMilestone('startup');
       await Otel.forceFlush();
 
-      final metric = metricExporter.lastMetricNamed(
-        'app.device.storage.free',
-      );
+      final metric = metricExporter.lastMetricNamed('app.device.storage.free');
       expect(metric, isNull);
 
       observer.dispose();
@@ -476,9 +467,7 @@ void main() {
       observer.start();
       await Otel.forceFlush();
 
-      final metric = metricExporter.lastMetricNamed(
-        'app.process.memory.rss',
-      );
+      final metric = metricExporter.lastMetricNamed('app.process.memory.rss');
       expect(metric, isNotNull);
       expect(metric!.points.single.value, greaterThan(0));
 
@@ -495,8 +484,7 @@ void main() {
           trackBatteryMetrics: true,
           trackRssMetrics: true,
           storageFreeBytesGetter: () async => 1000,
-          batteryStateStreamGetter: () =>
-              Stream<String>.value('charging'),
+          batteryStateStreamGetter: () => Stream<String>.value('charging'),
         );
 
         final first = build()..start();

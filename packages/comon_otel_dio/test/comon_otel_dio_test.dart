@@ -406,26 +406,29 @@ void main() {
     );
   });
 
-  test('uses an explicit request Content-Length for structured bodies', () async {
-    final dio = Dio()
-      ..httpClientAdapter = _FakeHttpClientAdapter((options) async {
-        return ResponseBody.fromString('ok', 200);
-      })
-      ..interceptors.add(OtelDioInterceptor());
+  test(
+    'uses an explicit request Content-Length for structured bodies',
+    () async {
+      final dio = Dio()
+        ..httpClientAdapter = _FakeHttpClientAdapter((options) async {
+          return ResponseBody.fromString('ok', 200);
+        })
+        ..interceptors.add(OtelDioInterceptor());
 
-    await dio.post<dynamic>(
-      'https://example.com/orders',
-      data: <String, Object>{'note': 'ship it'},
-      options: Options(headers: <String, Object>{'Content-Length': '19'}),
-    );
-    await Otel.forceFlush();
+      await dio.post<dynamic>(
+        'https://example.com/orders',
+        data: <String, Object>{'note': 'ship it'},
+        options: Options(headers: <String, Object>{'Content-Length': '19'}),
+      );
+      await Otel.forceFlush();
 
-    expect(
-      spanExporter.spans.single.attributes[SemanticAttributes
-          .httpRequestBodySize],
-      19,
-    );
-  });
+      expect(
+        spanExporter.spans.single.attributes[SemanticAttributes
+            .httpRequestBodySize],
+        19,
+      );
+    },
+  );
 
   test(
     'captures configured headers and redacts sensitive request headers',

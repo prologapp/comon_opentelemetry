@@ -188,10 +188,7 @@ final class OtelFlutterResourceObserver {
             }
             result.observe(
               1,
-              attributes: <String, Object>{
-                ...staticAttributes,
-                'state': state,
-              },
+              attributes: <String, Object>{...staticAttributes, 'state': state},
             );
           },
         );
@@ -298,12 +295,15 @@ final class OtelFlutterResourceObserver {
       // ignore: unnecessary_statements
       _batteryStateGauge;
       unawaited(_batteryStateSubscription?.cancel());
-      _batteryStateSubscription = _batteryStateStreamGetter().listen((state) {
-        _batteryState = state;
-      }, onError: (Object error, StackTrace stackTrace) {
-        // Telemetria nunca quebra o host: um erro no stream de estado da
-        // bateria apenas mantém o último estado conhecido (ou nenhum).
-      });
+      _batteryStateSubscription = _batteryStateStreamGetter().listen(
+        (state) {
+          _batteryState = state;
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          // Telemetria nunca quebra o host: um erro no stream de estado da
+          // bateria apenas mantém o último estado conhecido (ou nenhum).
+        },
+      );
     }
 
     if (trackRssMetrics) {
@@ -315,21 +315,24 @@ final class OtelFlutterResourceObserver {
 
     if (trackThermalMetrics && thermalStateStreamGetter != null) {
       unawaited(_thermalSubscription?.cancel());
-      _thermalSubscription = thermalStateStreamGetter!().listen((state) {
-        final previous = _lastThermalState;
-        _lastThermalState = state;
-        // The first reading is the baseline, not a transition.
-        if (previous == null || previous == state) {
-          return;
-        }
-        _thermalCounter?.add(
-          1,
-          attributes: <String, Object>{...staticAttributes, 'state': state},
-        );
-      }, onError: (Object error, StackTrace stackTrace) {
-        // Telemetria nunca quebra o host: um erro no stream térmico apenas
-        // interrompe a contagem daquele ciclo, sem propagar a exceção.
-      });
+      _thermalSubscription = thermalStateStreamGetter!().listen(
+        (state) {
+          final previous = _lastThermalState;
+          _lastThermalState = state;
+          // The first reading is the baseline, not a transition.
+          if (previous == null || previous == state) {
+            return;
+          }
+          _thermalCounter?.add(
+            1,
+            attributes: <String, Object>{...staticAttributes, 'state': state},
+          );
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          // Telemetria nunca quebra o host: um erro no stream térmico apenas
+          // interrompe a contagem daquele ciclo, sem propagar a exceção.
+        },
+      );
     }
   }
 
