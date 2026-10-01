@@ -36,6 +36,36 @@ final class _ThrowingMetricExporter implements MetricExporter {
   Future<void> shutdown() async {}
 }
 
+final class _SlowMetricExporter implements MetricExporter {
+  _SlowMetricExporter(this.delay);
+
+  final Duration delay;
+  int calls = 0;
+  int inFlight = 0;
+  int maxInFlight = 0;
+
+  @override
+  Future<ExportResult> export(List<MetricData> metrics) async {
+    calls += 1;
+    inFlight += 1;
+    if (inFlight > maxInFlight) {
+      maxInFlight = inFlight;
+    }
+    try {
+      await Future<void>.delayed(delay);
+      return ExportResult.success;
+    } finally {
+      inFlight -= 1;
+    }
+  }
+
+  @override
+  Future<void> forceFlush() async {}
+
+  @override
+  Future<void> shutdown() async {}
+}
+
 void defineExportResilienceTests() {
   group('export resilience', () {
     test('sync instruments drop non-finite measurements', () async {
@@ -217,7 +247,8 @@ void defineExportResilienceTests() {
       await done.future.timeout(const Duration(seconds: 5));
 
       expect(zoneErrors, isEmpty);
-      expect(exporter.exportCalls, greaterThan(0));
+      // A failed cycle must not stop later ticks from exporting.
+      expect(exporter.exportCalls, greaterThan(1));
     });
 
     test('meter provider flushes every reader even if one throws', () async {
@@ -312,6 +343,31 @@ void defineExportResilienceTests() {
 
       expect(grpcResult, ExportResult.success);
       expect(grpc.requests, hasLength(1));
+    });
+    test('periodic reader never runs two metric exports at once', () async {
+      final exporter = _SlowMetricExporter(const Duration(milliseconds: 100));
+      final reader = PeriodicMetricReader(
+        exporter: exporter,
+        interval: const Duration(milliseconds: 20),
+      );
+      final provider = MeterProvider(
+        resource: Resource.empty(),
+        readers: <MetricReader>[reader],
+      );
+      provider.getMeter('m').createIntCounter('c.overlap').add(1);
+
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      final callsBeforeFlush = exporter.calls;
+      await Future.wait(<Future<void>>[
+        provider.forceFlush(),
+        provider.forceFlush(),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await reader.shutdown();
+
+      expect(exporter.maxInFlight, 1);
+      // forceFlush always runs a fresh export of its own.
+      expect(exporter.calls, greaterThanOrEqualTo(callsBeforeFlush + 2));
     });
   });
 }

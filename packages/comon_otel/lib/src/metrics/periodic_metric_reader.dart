@@ -25,12 +25,22 @@ final class PeriodicMetricReader implements MetricReader {
   Timer? _timer;
   bool _isShutdown = false;
 
+  /// Completes when the current collect/export cycle ends. Never completes
+  /// with an error, so a failed cycle cannot poison the next one.
+  Future<void>? _inFlight;
+
   @override
   /// Attaches this reader to a provider and starts periodic collection.
   void attach(MeterProvider provider) {
     _provider = provider;
     _timer?.cancel();
     _timer = Timer.periodic(interval, (_) {
+      // A tick that lands while an export is still running is skipped:
+      // temporality is cumulative, so the next cycle carries the data, and
+      // queueing ticks behind a slow export would grow without bound.
+      if (_inFlight != null) {
+        return;
+      }
       unawaited(_collectFromTimer());
     });
   }
@@ -48,7 +58,28 @@ final class PeriodicMetricReader implements MetricReader {
 
   @override
   /// Collects metrics from the attached provider and exports them.
+  ///
+  /// Cycles are serialized: a call made while another cycle is running
+  /// waits for it and then runs its own, so at most one export is in
+  /// flight per reader.
   Future<void> collect() async {
+    final previous = _inFlight;
+    final cycle = Completer<void>();
+    _inFlight = cycle.future;
+    try {
+      if (previous != null) {
+        await previous;
+      }
+      await _collectAndExport();
+    } finally {
+      cycle.complete();
+      if (identical(_inFlight, cycle.future)) {
+        _inFlight = null;
+      }
+    }
+  }
+
+  Future<void> _collectAndExport() async {
     if (_isShutdown) {
       return;
     }
