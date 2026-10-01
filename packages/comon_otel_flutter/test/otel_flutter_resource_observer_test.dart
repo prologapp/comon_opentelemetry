@@ -469,6 +469,56 @@ void main() {
     });
   });
 
+  group('dispose', () {
+    test(
+      'a disposed observer stops emitting its gauges (reinstall never duplicates series)',
+      () async {
+        OtelFlutterResourceObserver build() => OtelFlutterResourceObserver(
+          trackStorageMetrics: true,
+          trackBatteryMetrics: true,
+          trackRssMetrics: true,
+          storageFreeBytesGetter: () async => 1000,
+          batteryStateStreamGetter: () =>
+              Stream<String>.value('charging'),
+        );
+
+        final first = build()..start();
+        await first.recordStorageMilestone('startup');
+        await Future<void>.delayed(Duration.zero);
+        first.dispose();
+
+        final second = build()..start();
+        await second.recordStorageMilestone('startup');
+        await Future<void>.delayed(Duration.zero);
+
+        metricExporter.clear();
+        await Otel.forceFlush();
+
+        for (final name in <String>[
+          'app.process.memory.rss',
+          'app.device.storage.free',
+          'app.device.battery.state',
+        ]) {
+          expect(
+            metricExporter.metrics.where((metric) => metric.name == name),
+            hasLength(1),
+            reason: '$name must be exported by the live observer only',
+          );
+        }
+
+        second.dispose();
+        metricExporter.clear();
+        await Otel.forceFlush();
+        expect(
+          metricExporter.metrics.where(
+            (metric) => metric.name == 'app.process.memory.rss',
+          ),
+          isEmpty,
+        );
+      },
+    );
+  });
+
   group('edges', () {
     test('Otel not initialized does not crash', () async {
       await Otel.shutdown();
