@@ -10,6 +10,7 @@ final class OtlpRetryConfig {
     this.initialDelay = const Duration(milliseconds: 200),
     this.backoffMultiplier = 2.0,
     this.maxDelay = const Duration(seconds: 2),
+    this.maxRetryAfter = const Duration(seconds: 30),
   }) : assert(maxAttempts >= 1, 'maxAttempts must be >= 1');
 
   /// Maximum number of export attempts.
@@ -21,8 +22,13 @@ final class OtlpRetryConfig {
   /// Multiplier applied after each failed attempt.
   final double backoffMultiplier;
 
-  /// Upper bound for exponential backoff and for a server `Retry-After`.
+  /// Upper bound for exponential backoff.
   final Duration maxDelay;
+
+  /// Longest server `Retry-After` the exporter will wait for before
+  /// retrying. A longer one makes the export fail at once (no retry) instead
+  /// of blocking the signal's export chain; a shorter one is honored as sent.
+  final Duration maxRetryAfter;
 }
 
 /// Executes an OTLP HTTP export with retry semantics.
@@ -48,12 +54,18 @@ Future<ExportResult> executeOtlpExportWithRetry({
         return ExportResult.failure;
       }
 
-      // Honor Retry-After only up to maxDelay: an unbounded value (up to
-      // 86400 s) would freeze this signal's export chain, fill its queue
-      // and hold any flush the host awaits (e.g. when the app is paused).
+      // Never resend earlier than the server asked: when a collector is
+      // overloaded, retrying early from a whole fleet is what Retry-After
+      // exists to prevent. A wait longer than maxRetryAfter (the parser
+      // accepts up to 86400 s) would instead freeze this signal's export
+      // chain and hold any flush the host awaits, so that batch fails now
+      // and follows the normal failure path.
       final retryAfter = response.retryAfter;
       if (retryAfter != null) {
-        delay = retryAfter > retry.maxDelay ? retry.maxDelay : retryAfter;
+        if (retryAfter > retry.maxRetryAfter) {
+          return ExportResult.failure;
+        }
+        delay = retryAfter;
       }
     } catch (_) {
       if (attempt >= retry.maxAttempts) {

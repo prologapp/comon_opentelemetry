@@ -287,30 +287,55 @@ void defineExportResilienceTests() {
       expect(spans.forceFlushCount, 1);
       expect(logs.forceFlushCount, 1);
     });
-    test('Retry-After is capped at the retry maxDelay', () async {
+    test(
+      'Retry-After above maxRetryAfter fails fast without retrying',
+      () async {
+        final transport = _SequencedOtlpHttpTransport(<Object>[
+          const OtlpHttpResponse(
+            statusCode: 503,
+            headers: <String, String>{'retry-after': '3600'},
+          ),
+          const OtlpHttpResponse(statusCode: 200, body: '{}'),
+        ]);
+        // Default retry config: maxRetryAfter must default well below 3600 s.
+        final exporter = OtlpHttpJsonSpanExporter(
+          endpoint: 'https://collector.example.com',
+          transport: transport,
+        );
+
+        final stopwatch = Stopwatch()..start();
+        final result = await exporter
+            .export(const <SpanData>[])
+            .timeout(const Duration(seconds: 5));
+        stopwatch.stop();
+
+        // The server asked us to stay away: never resend earlier than that.
+        expect(result, ExportResult.failure);
+        expect(transport.requests, hasLength(1));
+        expect(stopwatch.elapsed, lessThan(const Duration(seconds: 1)));
+      },
+    );
+
+    test('Retry-After above a custom maxRetryAfter fails fast', () async {
       final transport = _SequencedOtlpHttpTransport(<Object>[
         const OtlpHttpResponse(
-          statusCode: 503,
-          headers: <String, String>{'retry-after': '3600'},
+          statusCode: 429,
+          headers: <String, String>{'retry-after': '2'},
         ),
         const OtlpHttpResponse(statusCode: 200, body: '{}'),
       ]);
       final exporter = OtlpHttpJsonSpanExporter(
         endpoint: 'https://collector.example.com',
         transport: transport,
-        retry: const OtlpRetryConfig(
-          maxAttempts: 2,
-          initialDelay: Duration.zero,
-          maxDelay: Duration(milliseconds: 50),
-        ),
+        retry: const OtlpRetryConfig(maxRetryAfter: Duration(seconds: 1)),
       );
 
       final result = await exporter
           .export(const <SpanData>[])
           .timeout(const Duration(seconds: 5));
 
-      expect(result, ExportResult.success);
-      expect(transport.requests, hasLength(2));
+      expect(result, ExportResult.failure);
+      expect(transport.requests, hasLength(1));
     });
     test('a 2xx with an unparseable body is a success, not a retry', () async {
       const retry = OtlpRetryConfig(
