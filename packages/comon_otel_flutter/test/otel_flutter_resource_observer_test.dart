@@ -504,10 +504,20 @@ void main() {
           'app.device.storage.free',
           'app.device.battery.state',
         ]) {
+          final metrics = metricExporter.metrics
+              .where((metric) => metric.name == name)
+              .toList();
           expect(
-            metricExporter.metrics.where((metric) => metric.name == name),
+            metrics,
             hasLength(1),
             reason: '$name must be exported by the live observer only',
+          );
+          // One series, too: a muted callback that still observed would
+          // show up as extra points on the surviving MetricData.
+          expect(
+            metrics.single.points,
+            hasLength(1),
+            reason: '$name must carry exactly one point (one series)',
           );
         }
 
