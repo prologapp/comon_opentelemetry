@@ -26,6 +26,18 @@ final class _CountingSpanExporter implements SpanExporter {
   Future<void> shutdown() async {}
 }
 
+/// Erro que conta quantas vezes o toString foi chamado: prova se a montagem
+/// dos atributos (que chama toString) rodou para uma ocorrência.
+final class _CountingToStringError implements Exception {
+  int toStringCalls = 0;
+
+  @override
+  String toString() {
+    toStringCalls += 1;
+    return 'counting error';
+  }
+}
+
 final class _ThrowingFlushSpanExporter implements SpanExporter {
   bool failFlush = true;
 
@@ -1867,6 +1879,119 @@ void main() {
 
       expect(spansNamed('flutter.error'), hasLength(2));
       instrumentation.dispose();
+    });
+
+    // O limitador decide antes da montagem dos atributos: uma ocorrência
+    // suprimida (sem hook configurado) não chama toString, não coleta
+    // diagnostics nem breadcrumbs e não passa pelo scrub.
+    test(
+      'a suppressed framework error does not build its attributes',
+      () async {
+        final error = _CountingToStringError();
+        var fallbackCalls = 0;
+        void fire() => recordFlutterFrameworkError(
+          FlutterErrorDetails(exception: error, stack: StackTrace.current),
+          fallback: (_) => fallbackCalls += 1,
+        );
+
+        for (
+          var i = 0;
+          i < OtelFlutterErrorRateLimiter.defaultMaxPerMinute;
+          i++
+        ) {
+          fire();
+        }
+        final toStringCallsWithinQuota = error.toStringCalls;
+        expect(toStringCallsWithinQuota, greaterThan(0));
+
+        for (var i = 0; i < 15; i++) {
+          fire();
+        }
+        await Otel.forceFlush();
+
+        expect(error.toStringCalls, toStringCallsWithinQuota);
+        expect(fallbackCalls, 20);
+        expect(spansNamed('flutter.error'), hasLength(5));
+        expect(
+          metricExporter
+              .lastMetricNamed('flutter.error.suppressed.count')!
+              .points
+              .single
+              .value,
+          15,
+        );
+      },
+    );
+
+    test('a suppressed platform error does not build its attributes and '
+        'keeps the fallback verdict', () async {
+      final error = _CountingToStringError();
+      var fallbackCalls = 0;
+      bool fire() => recordFlutterPlatformError(
+        error,
+        StackTrace.current,
+        fallback: (_, _) {
+          fallbackCalls += 1;
+          return true;
+        },
+      );
+
+      for (
+        var i = 0;
+        i < OtelFlutterErrorRateLimiter.defaultMaxPerMinute;
+        i++
+      ) {
+        expect(fire(), isTrue);
+      }
+      final toStringCallsWithinQuota = error.toStringCalls;
+      expect(toStringCallsWithinQuota, greaterThan(0));
+
+      for (var i = 0; i < 15; i++) {
+        expect(fire(), isTrue);
+      }
+      await Otel.forceFlush();
+
+      expect(error.toStringCalls, toStringCallsWithinQuota);
+      expect(fallbackCalls, 20);
+      expect(spansNamed('flutter.platform_error'), hasLength(5));
+      expect(
+        metricExporter
+            .lastMetricNamed('flutter.error.suppressed.count')!
+            .points
+            .single
+            .value,
+        15,
+      );
+    });
+
+    test('an error hook still gets full attributes for suppressed '
+        'occurrences', () async {
+      final snapshots = <OtelFlutterErrorSnapshot>[];
+      OtelFlutterErrorHooks.configure(frameworkErrorListener: snapshots.add);
+
+      for (var i = 0; i < 20; i++) {
+        recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: _CountingToStringError(),
+            stack: StackTrace.current,
+          ),
+          fallback: (_) {},
+        );
+      }
+      await Otel.forceFlush();
+
+      expect(snapshots, hasLength(20));
+      for (final snapshot in snapshots) {
+        expect(
+          snapshot.attributes[SemanticAttributes.exceptionMessage],
+          'counting error',
+        );
+        expect(
+          snapshot.attributes['error.group.name'],
+          'framework:_CountingToStringError',
+        );
+      }
+      expect(spansNamed('flutter.error'), hasLength(5));
     });
   });
 
