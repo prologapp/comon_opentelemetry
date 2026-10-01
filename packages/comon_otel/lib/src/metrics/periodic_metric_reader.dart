@@ -102,22 +102,24 @@ final class PeriodicMetricReader implements MetricReader {
 
   /// Waits, for at most [inFlightWaitLimit] in total, until no cycle is in
   /// flight (cycles started meanwhile, e.g. by a concurrent [forceFlush],
-  /// are waited for too). Returns whether the reader is idle.
-  Future<bool> _waitForIdle() async {
+  /// are waited for too). The result is already stale when the caller
+  /// resumes, so it must not be used to decide whether to start a cycle
+  /// (see [forceFlush]); [shutdown] only uses it to wait.
+  Future<void> _waitForIdle() async {
     final elapsed = Stopwatch()..start();
     while (true) {
       final inFlight = _inFlight;
       if (inFlight == null) {
-        return true;
+        return;
       }
       final remaining = inFlightWaitLimit - elapsed.elapsed;
       if (remaining <= Duration.zero) {
-        return false;
+        return;
       }
       try {
         await inFlight.timeout(remaining);
       } on TimeoutException {
-        return false;
+        return;
       }
     }
   }
@@ -160,11 +162,31 @@ final class PeriodicMetricReader implements MetricReader {
       return;
     }
 
-    // Checked and started in the same synchronous step, so concurrent
-    // callers that find the reader idle still run one after the other.
-    final idle = await _waitForIdle();
-    if (idle || _exportsRunning < 2) {
-      await _runCycle();
+    final elapsed = Stopwatch()..start();
+    while (true) {
+      // The idle check and the start of the cycle (which registers itself
+      // as in flight synchronously) happen in the same synchronous step
+      // after each await, so concurrent callers that find the reader idle
+      // still run one after the other.
+      final inFlight = _inFlight;
+      if (inFlight == null) {
+        await _runCycle();
+        break;
+      }
+      final remaining = inFlightWaitLimit - elapsed.elapsed;
+      if (remaining <= Duration.zero) {
+        // Still stuck after the limit: export alongside it, unless two
+        // exports are already running.
+        if (_exportsRunning < 2) {
+          await _runCycle();
+        }
+        break;
+      }
+      try {
+        await inFlight.timeout(remaining);
+      } on TimeoutException {
+        // Re-checked at the top of the loop.
+      }
     }
     await exporter.forceFlush();
   }

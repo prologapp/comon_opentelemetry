@@ -664,5 +664,30 @@ void defineExportResilienceTests() {
       expect(exporter.events.last, 'shutdown');
       exporter.release.complete();
     });
+    test(
+      'concurrent forceFlush on an idle reader exports one at a time',
+      () async {
+        final exporter = _SlowMetricExporter(const Duration(milliseconds: 100));
+        final reader = PeriodicMetricReader(
+          exporter: exporter,
+          // No tick during the test: the reader is idle when both flushes start.
+          interval: const Duration(hours: 1),
+        );
+        final provider = MeterProvider(
+          resource: Resource.empty(),
+          readers: <MetricReader>[reader],
+        );
+        provider.getMeter('m').createIntCounter('c.idle').add(1);
+
+        await Future.wait(<Future<void>>[
+          reader.forceFlush(),
+          reader.forceFlush(),
+        ]);
+        await reader.shutdown();
+
+        expect(exporter.calls, 2);
+        expect(exporter.maxInFlight, 1);
+      },
+    );
   });
 }
