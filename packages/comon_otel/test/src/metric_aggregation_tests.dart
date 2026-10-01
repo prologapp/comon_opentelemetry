@@ -229,8 +229,9 @@ void defineMetricAggregationTests() {
           // Warm-up so the timed collect is not dominated by JIT.
           await h.reader.collect();
           h.sink.clear();
+          // Enough cycles that one GC pause cannot dominate the ratio.
           final stopwatch = Stopwatch()..start();
-          for (var i = 0; i < 20; i++) {
+          for (var i = 0; i < 200; i++) {
             await h.reader.collect();
           }
           stopwatch.stop();
