@@ -689,7 +689,8 @@ void main() {
       );
       expect(frameworkFallbackCalls, 1);
       expect(platformFallbackCalls, 1);
-      expect(platformHandled, isTrue);
+      // The fallback returned false: the error stays unhandled.
+      expect(platformHandled, isFalse);
     },
   );
 
@@ -1232,6 +1233,35 @@ void main() {
       expect(errorLog.attributes['flutter.route.name'], '/details');
 
       observer.dispose();
+    },
+  );
+
+  test(
+    'platform error handled flag reflects only the fallback, never Otel state',
+    () async {
+      expect(Otel.isInitialized, isTrue);
+
+      expect(
+        recordFlutterPlatformError(StateError('no fallback'), StackTrace.current),
+        isFalse,
+        reason: 'without a fallback the engine must keep its default handling',
+      );
+      expect(
+        recordFlutterPlatformError(
+          StateError('unhandled by fallback'),
+          StackTrace.current,
+          fallback: (error, stackTrace) => false,
+        ),
+        isFalse,
+      );
+      expect(
+        recordFlutterPlatformError(
+          StateError('handled by fallback'),
+          StackTrace.current,
+          fallback: (error, stackTrace) => true,
+        ),
+        isTrue,
+      );
     },
   );
 

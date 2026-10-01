@@ -97,8 +97,10 @@ bool recordFlutterPlatformError(
     );
   }
 
-  final handledByFallback = fallback?.call(error, stackTrace) ?? false;
-  return handledByFallback || Otel.isInitialized;
+  // Recording telemetry does not handle the error: only the fallback (e.g.
+  // Sentry or the app's own handler) can claim it. Without one, return false
+  // so the engine keeps its default reporting.
+  return fallback?.call(error, stackTrace) ?? false;
 }
 
 Map<String, Object> _frameworkErrorAttributes(FlutterErrorDetails details) {
