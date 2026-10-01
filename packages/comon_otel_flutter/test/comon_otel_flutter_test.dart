@@ -1634,6 +1634,114 @@ void main() {
     );
   });
 
+  group('error telemetry never carries a URL path or query', () {
+    test('framework error: message, context, diagnostics, breadcrumbs, '
+        'status, event and log', () async {
+      OtelFlutterBreadcrumbs.add(category: 'http', message: 'GET $_leakyUrl');
+
+      recordFlutterFrameworkError(
+        FlutterErrorDetails(
+          exception: _UrlInMessageError(),
+          stack: _stackWithUrl(),
+          context: ErrorDescription('while fetching $_leakyUrl'),
+          informationCollector: () sync* {
+            yield DiagnosticsNode.message(
+              'Image provider: NetworkImage("$_leakyUrl", scale: 1.0)',
+            );
+          },
+        ),
+        fallback: (_) {},
+      );
+      await Otel.forceFlush();
+
+      final errorSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'flutter.error',
+      );
+      final errorLog = logExporter.logs.singleWhere(
+        (log) => log.body == 'flutter.framework_error',
+      );
+
+      expect(
+        errorSpan.attributes['flutter.error.diagnostics'],
+        contains('NetworkImage("https://bucket.s3.amazonaws.com/…"'),
+      );
+      expect(errorSpan.statusDescription, isNotNull);
+      expect(
+        errorSpan.events.map((event) => event.name),
+        contains('exception'),
+      );
+      _expectNoLeak(_flattenSpan(errorSpan));
+      _expectNoLeak(_flattenLog(errorLog));
+    });
+
+    test('platform error: attributes, status, event and log', () async {
+      recordFlutterPlatformError(
+        _UrlInMessageError(),
+        _stackWithUrl(),
+        fallback: (error, stackTrace) => true,
+      );
+      await Otel.forceFlush();
+
+      final errorSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'flutter.platform_error',
+      );
+      final errorLog = logExporter.logs.singleWhere(
+        (log) => log.body == 'flutter.platform_error',
+      );
+
+      expect(
+        errorLog.attributes[SemanticAttributes.exceptionMessage],
+        contains('uri=https://bucket.s3.amazonaws.com/…'),
+      );
+      _expectNoLeak(_flattenSpan(errorSpan));
+      _expectNoLeak(_flattenLog(errorLog));
+    });
+
+    test('error hooks receive scrubbed attributes', () async {
+      OtelFlutterErrorSnapshot? captured;
+      OtelFlutterErrorHooks.configure(
+        platformErrorListener: (snapshot) => captured = snapshot,
+      );
+
+      recordFlutterPlatformError(
+        _UrlInMessageError(),
+        _stackWithUrl(),
+        fallback: (error, stackTrace) => true,
+      );
+
+      expect(captured, isNotNull);
+      _expectNoLeak(captured!.attributes.values.join(' '));
+    });
+
+    test('startup trackPhase error: status and event', () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+        ),
+      );
+
+      await expectLater(
+        instrumentation.startupTracker!.trackPhase<void>(
+          'upload',
+          () async =>
+              Error.throwWithStackTrace(_UrlInMessageError(), _stackWithUrl()),
+        ),
+        throwsA(isA<_UrlInMessageError>()),
+      );
+      await Otel.forceFlush();
+
+      final phaseSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'app.startup.upload',
+      );
+      expect(phaseSpan.status, SpanStatus.error);
+      _expectNoLeak(_flattenSpan(phaseSpan));
+
+      instrumentation.dispose();
+    });
+  });
+
   test('interaction helpers trace tap callbacks with route context', () async {
     OtelFlutterRouteContext.update(
       routeName: '/checkout',
@@ -1887,4 +1995,65 @@ void main() {
 final class _ToStringThrows {
   @override
   String toString() => throw StateError('toString boom');
+}
+
+/// URL whose path carries a CPF and whose query carries an S3 signature.
+const String _leakyUrl =
+    'https://bucket.s3.amazonaws.com/colaboradores/12345678900/foto.jpg'
+    '?X-Amz-Signature=deadbeefcafe&X-Amz-Credential=AKIA#frag';
+
+/// Fragments of [_leakyUrl] that must not survive scrubbing.
+const List<String> _leakyFragments = <String>[
+  '12345678900',
+  'colaboradores',
+  'foto.jpg',
+  'X-Amz-Signature',
+  'deadbeefcafe',
+  'AKIA',
+  '#frag',
+];
+
+final class _UrlInMessageError implements Exception {
+  @override
+  String toString() => 'ClientException: Connection closed, uri=$_leakyUrl';
+}
+
+StackTrace _stackWithUrl() => StackTrace.fromString(
+  <String>[
+    '#0      Uploader.put (package:app/uploader.dart:10:3)',
+    '#1      request $_leakyUrl',
+    '#2      main (package:app/main.dart:5:1)',
+  ].join(String.fromCharCode(10)),
+);
+
+/// Flattens every exported string of a span (attributes, events, status).
+String _flattenSpan(SpanData span) {
+  final buffer = StringBuffer()
+    ..writeln(span.name)
+    ..writeln(span.statusDescription ?? '');
+  for (final value in span.attributes.values) {
+    buffer.writeln(value);
+  }
+  for (final event in span.events) {
+    buffer.writeln(event.name);
+    for (final value in event.attributes.values) {
+      buffer.writeln(value);
+    }
+  }
+  return buffer.toString();
+}
+
+/// Flattens every exported string of a log record (body and attributes).
+String _flattenLog(LogRecord log) {
+  final buffer = StringBuffer()..writeln(log.body);
+  for (final value in log.attributes.values) {
+    buffer.writeln(value);
+  }
+  return buffer.toString();
+}
+
+void _expectNoLeak(String flattened) {
+  for (final fragment in _leakyFragments) {
+    expect(flattened, isNot(contains(fragment)), reason: flattened);
+  }
 }

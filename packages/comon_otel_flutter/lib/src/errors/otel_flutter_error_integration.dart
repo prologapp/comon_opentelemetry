@@ -109,13 +109,24 @@ void _guarded(void Function() body) {
 
 /// Builds the full attribute set, degrading to a minimal one when building
 /// it throws (e.g. a throwing toString or informationCollector).
+///
+/// Every string value has its URLs reduced to scheme and host
+/// ([scrubUrls]): the exception message, context, diagnostics (e.g.
+/// `NetworkImage("<url>")`), breadcrumbs and group name may all embed a full
+/// URL with PII in the path or a signature in the query.
 Map<String, Object> _guardedAttributes(
   Map<String, Object> Function() build, {
   required String source,
   required Object error,
 }) {
   try {
-    return build();
+    return <String, Object>{
+      for (final entry in build().entries)
+        entry.key: switch (entry.value) {
+          final String text => scrubUrls(text),
+          final value => value,
+        },
+    };
   } catch (_) {
     return <String, Object>{
       'flutter.error.source': source,

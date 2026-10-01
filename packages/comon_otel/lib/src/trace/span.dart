@@ -1,5 +1,6 @@
 import '../core/instrumentation_scope.dart';
 import '../core/semantic_attributes.dart';
+import '../core/url_scrubber.dart';
 import 'span_id.dart';
 import 'span_context.dart';
 import 'span_data.dart';
@@ -151,14 +152,15 @@ final class Span {
       return;
     }
 
-    final userAttributeCount = _attributes.length - _reservedAttributeKeys.length;
+    final userAttributeCount =
+        _attributes.length - _reservedAttributeKeys.length;
     if (!_attributes.containsKey(key) &&
         userAttributeCount >= _limits.attributeCountLimit) {
       _droppedAttributesCount += 1;
       return;
     }
 
-    _attributes[key] = value;
+    _attributes[key] = scrubExceptionAttribute(key, value);
   }
 
   /// Sets a single span attribute reserved for SDK-internal identity data
@@ -243,6 +245,10 @@ final class Span {
   }
 
   /// Records an exception event using standard exception semantic attributes.
+  ///
+  /// URLs in the exception message and stack trace (derived or passed in
+  /// [attributes]) are reduced to scheme and host (see [scrubUrls]).
+  /// Explicit [attributes] still take precedence over the derived ones.
   void recordException(
     Object exception, {
     StackTrace? stackTrace,
@@ -261,12 +267,15 @@ final class Span {
   }
 
   /// Sets the span status.
+  ///
+  /// URLs in [description] are reduced to scheme and host (see [scrubUrls]):
+  /// callers typically pass `error.toString()`, which may embed a full URL.
   void setStatus(SpanStatus status, {String? description}) {
     if (hasEnded || !isRecording) {
       return;
     }
     _status = status;
-    _statusDescription = description;
+    _statusDescription = description == null ? null : scrubUrls(description);
   }
 
   /// Replaces the span name while the span is still recording.
@@ -354,7 +363,7 @@ final class Span {
         droppedCount += 1;
         continue;
       }
-      limited[entry.key] = entry.value;
+      limited[entry.key] = scrubExceptionAttribute(entry.key, entry.value);
     }
 
     return _LimitedAttributes(

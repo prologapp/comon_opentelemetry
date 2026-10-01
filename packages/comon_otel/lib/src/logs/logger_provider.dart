@@ -1,6 +1,7 @@
 import '../core/otel_session.dart';
 import '../core/resource.dart';
 import '../core/semantic_attributes.dart';
+import '../core/url_scrubber.dart';
 import 'log_processor.dart';
 import 'log_record.dart';
 import 'otel_logger.dart';
@@ -23,6 +24,10 @@ final class LoggerProvider {
   }
 
   /// Sends [record] through every configured log processor.
+  ///
+  /// Exception text (`exception.message`, `exception.stacktrace`) has its
+  /// URLs reduced to scheme and host (see [scrubUrls]), whichever path
+  /// produced the record ([OtelLogger.error], a log bridge, a raw [emit]).
   ///
   /// Every record is stamped with the isolate's `session.id` first. Log
   /// records are immutable value objects and [LogProcessor.onEmit] fans out
@@ -48,7 +53,8 @@ final class LoggerProvider {
       spanContext: record.spanContext,
       loggerName: record.loggerName,
       attributes: <String, Object>{
-        ...record.attributes,
+        for (final entry in record.attributes.entries)
+          entry.key: scrubExceptionAttribute(entry.key, entry.value),
         SemanticAttributes.sessionId: OtelSession.id,
       },
     );
