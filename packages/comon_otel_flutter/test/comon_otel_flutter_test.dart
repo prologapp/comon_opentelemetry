@@ -661,10 +661,22 @@ void main() {
     observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
     observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
     observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+    // Android may detach the engine right after paused: same trip.
+    observer.didChangeAppLifecycleState(AppLifecycleState.detached);
 
     await Future<void>.delayed(Duration.zero);
 
     expect(exporter.forceFlushCount, 1);
+
+    // Coming back to the foreground re-arms the flush for the next trip.
+    observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
+    observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+    observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+
+    await Future<void>.delayed(Duration.zero);
+
+    expect(exporter.forceFlushCount, 2);
 
     await Otel.shutdown();
   });

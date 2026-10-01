@@ -46,6 +46,10 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
   final String memoryPressureCountMetricName;
 
   AppLifecycleState? _lastLifecycleState;
+
+  /// Whether the current trip to the background (since the last `resumed`)
+  /// already flushed, so paused -> detached does not flush twice.
+  bool _flushedThisBackgroundTrip = false;
   DateTime? _foregroundStartedAt;
   DateTime? _backgroundStartedAt;
   Histogram<double>? _foregroundHistogramCache;
@@ -119,10 +123,17 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
       }
     }
 
-    if (Otel.isInitialized && _isBackgrounding(state)) {
+    if (state == AppLifecycleState.resumed) {
+      _flushedThisBackgroundTrip = false;
+    }
+
+    if (Otel.isInitialized &&
+        _isBackgrounding(state) &&
+        !_flushedThisBackgroundTrip) {
       // The only reliable point to drain the in-memory queue before the OS
       // suspends or kills the process. A failed flush must never reach
       // PlatformDispatcher.onError as an unhandled async error.
+      _flushedThisBackgroundTrip = true;
       unawaited(Otel.forceFlush().catchError((Object _) {}));
     }
 
@@ -130,8 +141,9 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
   }
 
   // `hidden` is left out on purpose: leaving the app goes
-  // inactive -> hidden -> paused, so flushing on both hidden and paused
-  // drained the queues twice per trip to the background.
+  // inactive -> hidden -> paused (-> detached on Android), so flushing on
+  // hidden drained the queues twice per trip to the background. paused and
+  // detached share one flush per trip via [_flushedThisBackgroundTrip].
   bool _isBackgrounding(AppLifecycleState state) {
     return state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached;
