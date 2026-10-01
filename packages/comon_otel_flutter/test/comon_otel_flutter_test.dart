@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:comon_otel/comon_otel.dart';
@@ -19,6 +20,24 @@ final class _CountingSpanExporter implements SpanExporter {
   @override
   Future<void> forceFlush() async {
     forceFlushCount += 1;
+  }
+
+  @override
+  Future<void> shutdown() async {}
+}
+
+final class _ThrowingFlushSpanExporter implements SpanExporter {
+  bool failFlush = true;
+
+  @override
+  Future<ExportResult> export(List<SpanData> data) async =>
+      ExportResult.success;
+
+  @override
+  Future<void> forceFlush() async {
+    if (failFlush) {
+      throw StateError('flush boom');
+    }
   }
 
   @override
@@ -563,7 +582,6 @@ void main() {
   for (final state in <AppLifecycleState>[
     AppLifecycleState.paused,
     AppLifecycleState.detached,
-    AppLifecycleState.hidden,
   ]) {
     test('flushes telemetry when the app is backgrounded ($state)', () async {
       TestWidgetsFlutterBinding.ensureInitialized();
@@ -588,6 +606,56 @@ void main() {
       await Otel.shutdown();
     });
   }
+
+  test('flushes exactly once per trip to the background', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final exporter = _CountingSpanExporter();
+    await Otel.shutdown();
+    await Otel.init(
+      serviceName: 'lifecycle-test',
+      spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
+      metricReaders: const <MetricReader>[],
+      logProcessors: const <LogProcessor>[],
+    );
+
+    final observer = OtelFlutterBindingObserver();
+    observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    // Real platform order when the user leaves the app.
+    observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
+    observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+    observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+
+    await Future<void>.delayed(Duration.zero);
+
+    expect(exporter.forceFlushCount, 1);
+
+    await Otel.shutdown();
+  });
+
+  test('a failing background flush never surfaces as an unhandled error', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final exporter = _ThrowingFlushSpanExporter();
+    await Otel.shutdown();
+    await Otel.init(
+      serviceName: 'lifecycle-test',
+      spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
+      metricReaders: const <MetricReader>[],
+      logProcessors: const <LogProcessor>[],
+    );
+
+    final uncaught = <Object>[];
+    await runZonedGuarded(() async {
+      final observer = OtelFlutterBindingObserver();
+      observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+      observer.didChangeAppLifecycleState(AppLifecycleState.detached);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }, (error, stackTrace) => uncaught.add(error));
+
+    exporter.failFlush = false;
+    await Otel.shutdown();
+    expect(uncaught, isEmpty);
+  });
 
   test('does not flush on non-backgrounding lifecycle states', () async {
     TestWidgetsFlutterBinding.ensureInitialized();

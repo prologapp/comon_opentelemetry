@@ -121,17 +121,20 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
 
     if (Otel.isInitialized && _isBackgrounding(state)) {
       // The only reliable point to drain the in-memory queue before the OS
-      // suspends or kills the process.
-      unawaited(Otel.forceFlush());
+      // suspends or kills the process. A failed flush must never reach
+      // PlatformDispatcher.onError as an unhandled async error.
+      unawaited(Otel.forceFlush().catchError((Object _) {}));
     }
 
     _lastLifecycleState = state;
   }
 
+  // `hidden` is left out on purpose: leaving the app goes
+  // inactive -> hidden -> paused, so flushing on both hidden and paused
+  // drained the queues twice per trip to the background.
   bool _isBackgrounding(AppLifecycleState state) {
     return state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached ||
-        state == AppLifecycleState.hidden;
+        state == AppLifecycleState.detached;
   }
 
   @override
