@@ -68,7 +68,11 @@ final class LoggerProvider {
   /// Shuts down all configured log processors.
   Future<void> shutdown() async {
     for (final processor in _logProcessors) {
-      await processor.shutdown();
+      try {
+        await processor.shutdown();
+      } catch (_) {
+        // One failing processor must not keep the others from shutting down.
+      }
     }
   }
 }

@@ -154,7 +154,11 @@ final class TracerProvider {
   /// Shuts down all configured span processors.
   Future<void> shutdown() async {
     for (final processor in _spanProcessors) {
-      await processor.shutdown();
+      try {
+        await processor.shutdown();
+      } catch (_) {
+        // One failing processor must not keep the others from shutting down.
+      }
     }
   }
 

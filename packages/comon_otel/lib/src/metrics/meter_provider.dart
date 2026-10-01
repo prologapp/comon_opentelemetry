@@ -94,7 +94,11 @@ final class MeterProvider {
   /// Shuts down all attached metric readers.
   Future<void> shutdown() async {
     for (final reader in _readers) {
-      await reader.shutdown();
+      try {
+        await reader.shutdown();
+      } catch (_) {
+        // One failing reader must not keep the others from shutting down.
+      }
     }
   }
 }

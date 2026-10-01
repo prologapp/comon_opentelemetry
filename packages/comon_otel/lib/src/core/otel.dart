@@ -610,10 +610,21 @@ final class Otel {
   OtelLogger get logger => loggerProvider.getLogger('comon_otel');
 
   /// Shuts down the current providers and clears the singleton if needed.
+  ///
+  /// Each signal is shut down independently: a failure in one never skips
+  /// the others, and no error is propagated to the caller.
   Future<void> dispose() async {
-    await tracerProvider.shutdown();
-    await meterProvider.shutdown();
-    await loggerProvider.shutdown();
+    for (final shutdown in <Future<void> Function()>[
+      tracerProvider.shutdown,
+      meterProvider.shutdown,
+      loggerProvider.shutdown,
+    ]) {
+      try {
+        await shutdown();
+      } catch (_) {
+        // Telemetry never throws into the host.
+      }
+    }
     if (identical(_instance, this)) {
       _instance = null;
     }

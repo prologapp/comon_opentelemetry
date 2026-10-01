@@ -66,6 +66,69 @@ final class _SlowMetricExporter implements MetricExporter {
   Future<void> shutdown() async {}
 }
 
+final class _ShutdownProbe {
+  bool throws = false;
+  int shutdowns = 0;
+
+  Future<void> shutdown() async {
+    shutdowns += 1;
+    if (throws) {
+      throw StateError('shutdown failed');
+    }
+  }
+}
+
+final class _ProbeMetricReader implements MetricReader {
+  _ProbeMetricReader(this.probe);
+
+  final _ShutdownProbe probe;
+
+  @override
+  void attach(MeterProvider provider) {}
+
+  @override
+  Future<void> collect() async {}
+
+  @override
+  Future<void> forceFlush() async {}
+
+  @override
+  Future<void> shutdown() => probe.shutdown();
+}
+
+final class _ProbeSpanProcessor implements SpanProcessor {
+  _ProbeSpanProcessor(this.probe);
+
+  final _ShutdownProbe probe;
+
+  @override
+  void onStart(Span span) {}
+
+  @override
+  void onEnd(Span span) {}
+
+  @override
+  Future<void> forceFlush() async {}
+
+  @override
+  Future<void> shutdown() => probe.shutdown();
+}
+
+final class _ProbeLogProcessor implements LogProcessor {
+  _ProbeLogProcessor(this.probe);
+
+  final _ShutdownProbe probe;
+
+  @override
+  void onEmit(LogRecord record) {}
+
+  @override
+  Future<void> forceFlush() async {}
+
+  @override
+  Future<void> shutdown() => probe.shutdown();
+}
+
 void defineExportResilienceTests() {
   group('export resilience', () {
     test('sync instruments drop non-finite measurements', () async {
@@ -393,6 +456,63 @@ void defineExportResilienceTests() {
       expect(exporter.maxInFlight, 1);
       // forceFlush always runs a fresh export of its own.
       expect(exporter.calls, greaterThanOrEqualTo(callsBeforeFlush + 2));
+    });
+    test(
+      'providers shut down every reader/processor even if one throws',
+      () async {
+        final failing = _ShutdownProbe()..throws = true;
+        final reader = _ShutdownProbe();
+        final span = _ShutdownProbe();
+        final log = _ShutdownProbe();
+
+        await MeterProvider(
+          resource: Resource.empty(),
+          readers: <MetricReader>[
+            _ProbeMetricReader(failing),
+            _ProbeMetricReader(reader),
+          ],
+        ).shutdown();
+        await TracerProvider(
+          resource: Resource.empty(),
+          spanProcessors: <SpanProcessor>[
+            _ProbeSpanProcessor(failing),
+            _ProbeSpanProcessor(span),
+          ],
+          sampler: const AlwaysOnSampler(),
+        ).shutdown();
+        await LoggerProvider(
+          resource: Resource.empty(),
+          logProcessors: <LogProcessor>[
+            _ProbeLogProcessor(failing),
+            _ProbeLogProcessor(log),
+          ],
+        ).shutdown();
+
+        expect(failing.shutdowns, 3);
+        expect(reader.shutdowns, 1);
+        expect(span.shutdowns, 1);
+        expect(log.shutdowns, 1);
+      },
+    );
+
+    test('Otel.shutdown shuts down every signal when one fails', () async {
+      final span = _ShutdownProbe();
+      final metrics = _ShutdownProbe()..throws = true;
+      final log = _ShutdownProbe();
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'shutdown-isolation',
+        spanProcessors: <SpanProcessor>[_ProbeSpanProcessor(span)],
+        metricReaders: <MetricReader>[_ProbeMetricReader(metrics)],
+        logProcessors: <LogProcessor>[_ProbeLogProcessor(log)],
+      );
+
+      await Otel.shutdown();
+
+      expect(span.shutdowns, 1);
+      expect(metrics.shutdowns, 1);
+      expect(log.shutdowns, 1);
+      expect(Otel.isInitialized, isFalse);
     });
   });
 }
