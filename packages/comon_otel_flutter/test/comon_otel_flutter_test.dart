@@ -1178,6 +1178,76 @@ void main() {
     expect(observer.isPolling, isFalse);
   });
 
+  test('install is idempotent: a second call never duplicates hooks', () async {
+    const config = ComonOtelFlutterConfig(
+      observeAppLifecycle: false,
+      trackNavigatorRoutes: false,
+      markFirstFrame: false,
+    );
+    final first = ComonOtelFlutter.install(config: config);
+    final second = ComonOtelFlutter.install(config: config);
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+
+    expect(identical(first, second), isTrue);
+
+    FlutterError.onError?.call(
+      FlutterErrorDetails(exception: StateError('once'), stack: StackTrace.current),
+    );
+    await Otel.forceFlush();
+    expect(
+      spanExporter.spans.where((span) => span.name == 'flutter.error'),
+      hasLength(1),
+    );
+
+    second.dispose();
+    first.dispose(); // A repeated dispose is a no-op.
+    expect(FlutterError.onError, same(FlutterError.presentError));
+  });
+
+  test(
+    'install against a new Otel instance replaces the stale installation',
+    () async {
+      const config = ComonOtelFlutterConfig(
+        observeAppLifecycle: false,
+        trackNavigatorRoutes: false,
+        markFirstFrame: false,
+      );
+      final stale = ComonOtelFlutter.install(config: config);
+      addTearDown(stale.dispose);
+
+      final exporter = InMemorySpanExporter();
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'reinit',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
+        metricReaders: const <MetricReader>[],
+        logProcessors: const <LogProcessor>[],
+      );
+      final fresh = ComonOtelFlutter.install(config: config);
+      addTearDown(fresh.dispose);
+      expect(identical(stale, fresh), isFalse);
+
+      FlutterError.onError?.call(
+        FlutterErrorDetails(
+          exception: StateError('once'),
+          stack: StackTrace.current,
+        ),
+      );
+      await Otel.forceFlush();
+      expect(
+        exporter.spans.where((span) => span.name == 'flutter.error'),
+        hasLength(1),
+      );
+
+      // Disposing the stale handle late must not clobber the live hooks.
+      stale.dispose();
+      expect(FlutterError.onError, isNot(same(FlutterError.presentError)));
+      fresh.dispose();
+      expect(FlutterError.onError, same(FlutterError.presentError));
+    },
+  );
+
   test('flutter framework errors are recorded as telemetry', () async {
     final instrumentation = ComonOtelFlutter.install(
       config: const ComonOtelFlutterConfig(observeAppLifecycle: false),

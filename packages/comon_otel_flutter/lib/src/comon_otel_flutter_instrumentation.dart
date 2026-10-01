@@ -1,3 +1,4 @@
+import 'package:comon_otel/comon_otel.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
@@ -18,12 +19,48 @@ typedef OtelPlatformErrorCallback =
 
 /// Entry point for installing Flutter-specific OpenTelemetry instrumentation.
 final class ComonOtelFlutter {
+  static ComonOtelFlutterInstrumentation? _active;
+  static Otel? _activeOtel;
+
   /// Installs Flutter observers, error hooks, and startup tracking.
+  ///
+  /// Idempotent: while a previous installation is still active (not
+  /// disposed) for the same [Otel] instance, the existing handle is returned
+  /// unchanged and the arguments of this call are ignored — dispose it first
+  /// to reinstall with a different configuration. An active installation
+  /// left over from a previous [Otel] instance is disposed and replaced, so
+  /// observers and error hooks are never chained twice.
   static ComonOtelFlutterInstrumentation install({
     ComonOtelFlutterConfig config = const ComonOtelFlutterConfig(),
     WidgetsBinding? binding,
     FlutterExceptionHandler? flutterExceptionHandler,
     OtelPlatformErrorCallback? platformDispatcherErrorCallback,
+  }) {
+    final otel = Otel.isInitialized ? Otel.instance : null;
+    final active = _active;
+    if (active != null && !active._disposed) {
+      if (identical(otel, _activeOtel)) {
+        return active;
+      }
+      active.dispose();
+    }
+
+    final instrumentation = _install(
+      config: config,
+      binding: binding,
+      flutterExceptionHandler: flutterExceptionHandler,
+      platformDispatcherErrorCallback: platformDispatcherErrorCallback,
+    );
+    _active = instrumentation;
+    _activeOtel = otel;
+    return instrumentation;
+  }
+
+  static ComonOtelFlutterInstrumentation _install({
+    required ComonOtelFlutterConfig config,
+    required WidgetsBinding? binding,
+    required FlutterExceptionHandler? flutterExceptionHandler,
+    required OtelPlatformErrorCallback? platformDispatcherErrorCallback,
   }) {
     final resolvedBinding =
         binding ?? WidgetsFlutterBinding.ensureInitialized();
@@ -220,8 +257,15 @@ final class ComonOtelFlutterInstrumentation {
     startupTracker?.markFirstInteraction(attributes: attributes);
   }
 
+  bool _disposed = false;
+
   /// Removes installed observers and restores previous error handlers.
+  /// Calling it more than once is a no-op.
   void dispose() {
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
     if (lifecycleObserver != null) {
       _binding.removeObserver(lifecycleObserver!);
     }
