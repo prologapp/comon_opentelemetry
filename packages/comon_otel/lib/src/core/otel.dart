@@ -620,10 +620,23 @@ final class Otel {
   }
 
   /// Flushes pending trace, metric, and log exports.
+  ///
+  /// Each signal is flushed independently: a failure in one (e.g. a metric
+  /// exporter that throws) never prevents the others from flushing, and no
+  /// error is propagated to the caller.
   static Future<void> forceFlush() async {
-    await instance.tracerProvider.forceFlush();
-    await instance.meterProvider.forceFlush();
-    await instance.loggerProvider.forceFlush();
+    final otel = instance;
+    for (final flush in <Future<void> Function()>[
+      otel.tracerProvider.forceFlush,
+      otel.meterProvider.forceFlush,
+      otel.loggerProvider.forceFlush,
+    ]) {
+      try {
+        await flush();
+      } catch (_) {
+        // Telemetry never throws into the host.
+      }
+    }
   }
 
   /// Shuts down the shared SDK instance, if it exists.

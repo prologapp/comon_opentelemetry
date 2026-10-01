@@ -57,7 +57,11 @@ final class LoggerProvider {
   /// Flushes all configured log processors.
   Future<void> forceFlush() async {
     for (final processor in _logProcessors) {
-      await processor.forceFlush();
+      try {
+        await processor.forceFlush();
+      } catch (_) {
+        // One failing processor must not keep the others from flushing.
+      }
     }
   }
 

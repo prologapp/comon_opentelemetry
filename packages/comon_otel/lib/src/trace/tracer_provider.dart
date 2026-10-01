@@ -143,7 +143,11 @@ final class TracerProvider {
   /// Flushes all configured span processors.
   Future<void> forceFlush() async {
     for (final processor in _spanProcessors) {
-      await processor.forceFlush();
+      try {
+        await processor.forceFlush();
+      } catch (_) {
+        // One failing processor must not keep the others from flushing.
+      }
     }
   }
 

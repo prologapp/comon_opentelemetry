@@ -31,8 +31,19 @@ final class PeriodicMetricReader implements MetricReader {
     _provider = provider;
     _timer?.cancel();
     _timer = Timer.periodic(interval, (_) {
-      unawaited(collect());
+      unawaited(_collectFromTimer());
     });
+  }
+
+  /// Timer-driven collection: nobody awaits it, so any failure (exporter
+  /// throwing, export timeout) is swallowed instead of surfacing as an
+  /// unhandled error every interval.
+  Future<void> _collectFromTimer() async {
+    try {
+      await collect();
+    } catch (_) {
+      // Telemetry never throws into the host.
+    }
   }
 
   @override

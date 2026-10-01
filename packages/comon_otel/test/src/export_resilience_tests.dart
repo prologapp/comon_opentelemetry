@@ -18,6 +18,24 @@ List<Map<String, Object?>> _jsonMetrics(Map<String, Object?> payload) {
   ];
 }
 
+final class _ThrowingMetricExporter implements MetricExporter {
+  int exportCalls = 0;
+
+  @override
+  Future<ExportResult> export(List<MetricData> metrics) async {
+    exportCalls += 1;
+    throw StateError('metric export failed');
+  }
+
+  @override
+  Future<void> forceFlush() async {
+    throw StateError('metric flush failed');
+  }
+
+  @override
+  Future<void> shutdown() async {}
+}
+
 void defineExportResilienceTests() {
   group('export resilience', () {
     test('sync instruments drop non-finite measurements', () async {
@@ -155,6 +173,88 @@ void defineExportResilienceTests() {
       final attributes = _decodeAttributes(bad['attributes'] as List<Object?>);
       expect(attributes['ratio'], 'NaN');
       expect(attributes['bounds'], <Object?>[1.0, 'Infinity', '-Infinity']);
+    });
+    test('a throwing observable callback does not block other metrics', () {
+      final h = _isolatedMeterProvider();
+      final meter = h.provider.getMeter('m');
+      meter.createObservableGauge(
+        'g.throws',
+        callback: (_) => throw StateError('callback failed'),
+      );
+      meter.createIntCounter('c.after').add(1);
+      meter.createObservableGauge('g.ok', callback: (r) => r.observe(2));
+
+      final names = h.provider.collectAll().map((m) => m.name).toList();
+
+      expect(names, <String>['c.after', 'g.ok']);
+    });
+
+    test('periodic reader never leaks collect errors to the zone', () async {
+      final zoneErrors = <Object>[];
+      final exporter = _ThrowingMetricExporter();
+      final done = Completer<void>();
+      runZonedGuarded(() async {
+        final reader = PeriodicMetricReader(
+          exporter: exporter,
+          interval: const Duration(milliseconds: 20),
+        );
+        final provider = MeterProvider(
+          resource: Resource.empty(),
+          readers: <MetricReader>[reader],
+        );
+        final meter = provider.getMeter('m');
+        meter.createObservableGauge(
+          'g.throws',
+          callback: (_) => throw StateError('callback failed'),
+        );
+        meter.createIntCounter('c.ok').add(1);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        await reader.shutdown();
+        done.complete();
+      }, (error, _) => zoneErrors.add(error));
+      // Errors cannot cross the guarded zone, so wait on a completer instead
+      // of the zone's own future.
+      await done.future.timeout(const Duration(seconds: 5));
+
+      expect(zoneErrors, isEmpty);
+      expect(exporter.exportCalls, greaterThan(0));
+    });
+
+    test('meter provider flushes every reader even if one throws', () async {
+      final healthy = InMemoryMetricExporter();
+      final provider = MeterProvider(
+        resource: Resource.empty(),
+        readers: <MetricReader>[
+          ExportingMetricReader(exporter: _ThrowingMetricExporter()),
+          ExportingMetricReader(exporter: healthy),
+        ],
+      );
+      provider.getMeter('m').createIntCounter('c.flush').add(1);
+
+      await provider.forceFlush();
+
+      expect(healthy.lastMetricNamed('c.flush'), isNotNull);
+      expect(healthy.forceFlushCount, 1);
+    });
+
+    test('Otel.forceFlush still flushes logs when metrics fail', () async {
+      final logs = InMemoryLogExporter();
+      final spans = InMemorySpanExporter();
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'flush-isolation',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(spans)],
+        metricReaders: <MetricReader>[
+          ExportingMetricReader(exporter: _ThrowingMetricExporter()),
+        ],
+        logProcessors: <LogProcessor>[SimpleLogProcessor(logs)],
+      );
+      Otel.instance.meter.createIntCounter('c.any').add(1);
+
+      await Otel.forceFlush();
+
+      expect(spans.forceFlushCount, 1);
+      expect(logs.forceFlushCount, 1);
     });
   });
 }
