@@ -644,41 +644,78 @@ void main() {
     });
   }
 
-  test('flushes exactly once per trip to the background', () async {
-    TestWidgetsFlutterBinding.ensureInitialized();
-    final exporter = _CountingSpanExporter();
-    await Otel.shutdown();
-    await Otel.init(
-      serviceName: 'lifecycle-test',
-      spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
-      metricReaders: const <MetricReader>[],
-      logProcessors: const <LogProcessor>[],
-    );
+  group('background flush policy', () {
+    late _CountingSpanExporter spans;
+    late InMemoryLogExporter logs;
 
-    final observer = OtelFlutterBindingObserver();
-    observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    // Real platform order when the user leaves the app.
-    observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
-    observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
-    observer.didChangeAppLifecycleState(AppLifecycleState.paused);
-    // Android may detach the engine right after paused: same trip.
-    observer.didChangeAppLifecycleState(AppLifecycleState.detached);
+    setUp(() async {
+      spans = _CountingSpanExporter();
+      logs = InMemoryLogExporter();
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'lifecycle-test',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(spans)],
+        metricReaders: const <MetricReader>[],
+        // Long schedule: a record only reaches the exporter through a flush.
+        logProcessors: <LogProcessor>[
+          BatchLogProcessor(
+            exporter: logs,
+            scheduleDelay: const Duration(hours: 1),
+          ),
+        ],
+      );
+    });
 
-    await Future<void>.delayed(Duration.zero);
+    tearDown(Otel.shutdown);
 
-    expect(exporter.forceFlushCount, 1);
+    Future<void> drain() => Future<void>.delayed(Duration.zero);
 
-    // Coming back to the foreground re-arms the flush for the next trip.
-    observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
-    observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
-    observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
-    observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+    test('detached always flushes, so its own log is exported', () async {
+      final observer = OtelFlutterBindingObserver();
+      observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
+      observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await drain();
+      observer.didChangeAppLifecycleState(AppLifecycleState.detached);
+      await drain();
 
-    await Future<void>.delayed(Duration.zero);
+      // paused + detached.
+      expect(spans.forceFlushCount, 2);
+      expect(
+        logs.logs.where(
+          (log) => log.attributes['flutter.lifecycle.state'] == 'detached',
+        ),
+        hasLength(1),
+      );
+    });
 
-    expect(exporter.forceFlushCount, 2);
+    test('repeated paused without resuming flushes once', () async {
+      final observer = OtelFlutterBindingObserver();
+      observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
+      observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+      // Back and forth between background states without reaching resumed.
+      observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await drain();
 
-    await Otel.shutdown();
+      expect(spans.forceFlushCount, 1);
+    });
+
+    test('returning to resumed re-arms the flush for the next trip', () async {
+      final observer = OtelFlutterBindingObserver();
+      for (var trip = 0; trip < 2; trip++) {
+        observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
+        observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+        observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+        await drain();
+      }
+
+      expect(spans.forceFlushCount, 2);
+    });
   });
 
   test(

@@ -47,8 +47,9 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
 
   AppLifecycleState? _lastLifecycleState;
 
-  /// Whether the current trip to the background (since the last `resumed`)
-  /// already flushed, so paused -> detached does not flush twice.
+  /// Whether `paused` already flushed in the current trip to the background
+  /// (since the last `resumed`). Only gates repeated `paused`; `detached`
+  /// ignores it — see [_shouldFlush].
   bool _flushedThisBackgroundTrip = false;
   DateTime? _foregroundStartedAt;
   DateTime? _backgroundStartedAt;
@@ -127,26 +128,36 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
       _flushedThisBackgroundTrip = false;
     }
 
-    if (Otel.isInitialized &&
-        _isBackgrounding(state) &&
-        !_flushedThisBackgroundTrip) {
+    if (Otel.isInitialized && _shouldFlush(state)) {
       // The only reliable point to drain the in-memory queue before the OS
       // suspends or kills the process. A failed flush must never reach
       // PlatformDispatcher.onError as an unhandled async error.
-      _flushedThisBackgroundTrip = true;
+      if (state == AppLifecycleState.paused) {
+        _flushedThisBackgroundTrip = true;
+      }
       unawaited(Otel.forceFlush().catchError((Object _) {}));
     }
 
     _lastLifecycleState = state;
   }
 
-  // `hidden` is left out on purpose: leaving the app goes
-  // inactive -> hidden -> paused (-> detached on Android), so flushing on
-  // hidden drained the queues twice per trip to the background. paused and
-  // detached share one flush per trip via [_flushedThisBackgroundTrip].
-  bool _isBackgrounding(AppLifecycleState state) {
-    return state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached;
+  /// Background flush policy:
+  /// - `detached` ALWAYS flushes: it is the last chance before the process
+  ///   ends, and records emitted after the `paused` flush (including the
+  ///   `app.lifecycle` log of `detached` itself, logged above) would
+  ///   otherwise die in the batch queues.
+  /// - `paused` flushes at most once per trip to the background; repeated
+  ///   `paused` (e.g. paused -> hidden -> paused) without passing through
+  ///   `resumed` does not flush again. Returning to `resumed` re-arms it.
+  /// - `hidden`/`inactive` never flush: leaving the app goes
+  ///   inactive -> hidden -> paused, and flushing on hidden too drained the
+  ///   queues twice per trip.
+  bool _shouldFlush(AppLifecycleState state) {
+    return switch (state) {
+      AppLifecycleState.detached => true,
+      AppLifecycleState.paused => !_flushedThisBackgroundTrip,
+      _ => false,
+    };
   }
 
   @override
