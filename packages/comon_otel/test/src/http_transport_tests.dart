@@ -109,6 +109,61 @@ void defineHttpTransportTests() {
         },
       );
     }
+    test('one deadline covers headers and body together', () async {
+      const timeout = Duration(milliseconds: 400);
+      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <Socket>{};
+      server.listen((socket) {
+        sockets.add(socket);
+        var answered = false;
+        socket.listen((_) async {
+          if (answered) {
+            return;
+          }
+          answered = true;
+          // Headers arrive just before the deadline...
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          socket.add(
+            utf8.encode('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n'),
+          );
+          // ...and the body well after it.
+          await Future<void>.delayed(const Duration(milliseconds: 600));
+          try {
+            socket.add(utf8.encode('{}'));
+          } catch (_) {
+            // Connection already closed by the client.
+          }
+        }, onError: (Object _) {});
+      });
+      final transport = DefaultOtlpHttpTransport();
+      addTearDown(() async {
+        await transport.shutdown();
+        for (final socket in sockets) {
+          socket.destroy();
+        }
+        await server.close();
+      });
+
+      final stopwatch = Stopwatch()..start();
+      await expectLater(
+        transport.postJson(
+          OtlpHttpRequest(
+            uri: Uri.parse('http://127.0.0.1:${server.port}/v1/traces'),
+            body: '{}',
+            headers: const <String, String>{},
+            timeout: timeout,
+          ),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+      stopwatch.stop();
+
+      // A deadline restarted at the headers would end at ~700 ms.
+      expect(
+        stopwatch.elapsed,
+        lessThan(timeout + const Duration(milliseconds: 150)),
+      );
+    });
   });
 }
 
