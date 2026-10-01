@@ -56,8 +56,8 @@ Future<ExportResult> executeOtlpExportWithRetry({
 
       // Never resend earlier than the server asked: when a collector is
       // overloaded, retrying early from a whole fleet is what Retry-After
-      // exists to prevent. A wait longer than maxRetryAfter (the parser
-      // accepts up to 86400 s) would instead freeze this signal's export
+      // exists to prevent. A wait longer than maxRetryAfter (delta-seconds up
+      // to 86400 s, or an HTTP-date) would instead freeze this signal's export
       // chain and hold any flush the host awaits, so that batch fails now
       // and follows the normal failure path.
       final retryAfter = response.retryAfter;

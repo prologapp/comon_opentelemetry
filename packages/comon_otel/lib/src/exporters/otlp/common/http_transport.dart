@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:archive/archive.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart' show parseHttpDate;
 
 /// Supported OTLP payload compression algorithms.
 enum OtlpCompression { none, gzip }
@@ -104,13 +105,26 @@ final class OtlpHttpResponse {
       return Duration(seconds: seconds.clamp(0, 86400));
     }
 
-    final retryAt = DateTime.tryParse(rawValue.trim())?.toUtc();
+    // RFC 9110 sends the date form as an HTTP-date (IMF-fixdate, e.g.
+    // "Wed, 21 Oct 2015 07:28:00 GMT"); ISO 8601 is still accepted.
+    final retryAt =
+        (_tryParseHttpDate(rawValue.trim()) ??
+                DateTime.tryParse(rawValue.trim()))
+            ?.toUtc();
     if (retryAt == null) {
       return null;
     }
 
     final remaining = retryAt.difference(DateTime.now().toUtc());
     return remaining.isNegative ? Duration.zero : remaining;
+  }
+}
+
+DateTime? _tryParseHttpDate(String value) {
+  try {
+    return parseHttpDate(value);
+  } on FormatException {
+    return null;
   }
 }
 

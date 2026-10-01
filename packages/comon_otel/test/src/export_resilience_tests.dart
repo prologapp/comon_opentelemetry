@@ -514,5 +514,47 @@ void defineExportResilienceTests() {
       expect(log.shutdowns, 1);
       expect(Otel.isInitialized, isFalse);
     });
+    test('Retry-After given as an HTTP-date is honored', () async {
+      final header = formatHttpDate(
+        DateTime.now().toUtc().add(const Duration(seconds: 2)),
+      );
+      final parsed = OtlpHttpResponse(
+        statusCode: 503,
+        headers: <String, String>{'retry-after': header},
+      ).retryAfter;
+      // HTTP-date has second precision, so up to 1 s is truncated.
+      expect(parsed, isNotNull);
+      expect(parsed!, greaterThan(const Duration(milliseconds: 900)));
+      expect(parsed, lessThanOrEqualTo(const Duration(seconds: 2)));
+
+      final transport = _SequencedOtlpHttpTransport(<Object>[
+        OtlpHttpResponse(
+          statusCode: 503,
+          headers: <String, String>{
+            'retry-after': formatHttpDate(
+              DateTime.now().toUtc().add(const Duration(seconds: 2)),
+            ),
+          },
+        ),
+        const OtlpHttpResponse(statusCode: 200, body: '{}'),
+      ]);
+      final exporter = OtlpHttpJsonSpanExporter(
+        endpoint: 'https://collector.example.com',
+        transport: transport,
+        retry: const OtlpRetryConfig(
+          maxAttempts: 2,
+          initialDelay: Duration.zero,
+          maxDelay: Duration.zero,
+        ),
+      );
+
+      final stopwatch = Stopwatch()..start();
+      final result = await exporter.export(const <SpanData>[]);
+      stopwatch.stop();
+
+      expect(result, ExportResult.success);
+      expect(transport.requests, hasLength(2));
+      expect(stopwatch.elapsed, greaterThan(const Duration(milliseconds: 900)));
+    });
   });
 }
