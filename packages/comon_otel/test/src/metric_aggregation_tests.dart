@@ -30,6 +30,27 @@ MetricPoint _overflowPoint(MetricData metric) {
 
 void defineMetricAggregationTests() {
   group('metric aggregation', () {
+    test('histogram bounds are fixed at creation', () async {
+      final h = _isolatedMeterProvider();
+      final bounds = <double>[1, 5];
+      final histogram = h.provider
+          .getMeter('m')
+          .createHistogram('h.bounds', boundaries: bounds);
+
+      histogram.record(0.5);
+      // The caller mutates its own list after creating the instrument.
+      bounds
+        ..add(10)
+        ..add(20);
+      histogram.record(100);
+      await h.reader.collect();
+
+      final point = h.sink.lastMetricNamed('h.bounds')!.points.single;
+      expect(point.explicitBounds, <double>[1, 5]);
+      expect(point.bucketCounts, <int>[1, 0, 1]);
+      expect(point.count, 2);
+    });
+
     // Expected values below are computed by hand from the recorded sequence;
     // they do not reuse any aggregation code from the SDK.
 

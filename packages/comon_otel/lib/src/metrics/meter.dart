@@ -371,14 +371,20 @@ final class _HistogramMetric<T extends num>
     required this.metricCardinalityLimit,
     this.unit,
     this.description,
-    this.boundaries,
-  });
+    List<double>? boundaries,
+  }) : explicitBounds = List<double>.unmodifiable(
+         boundaries ?? const <double>[],
+       );
 
   final InstrumentationScope scope;
   final String name;
   final String? unit;
   final String? description;
-  final List<double>? boundaries;
+
+  /// Bucket bounds, copied at creation: the caller may keep mutating the
+  /// list it passed, but the bucket layout of a cumulative series must
+  /// never change after its first measurement.
+  final List<double> explicitBounds;
 
   /// Maximum number of distinct attribute sets kept by this instrument.
   final int metricCardinalityLimit;
@@ -403,7 +409,6 @@ final class _HistogramMetric<T extends num>
       retainedAttributeSets: _retainedAttributeSets,
       metricCardinalityLimit: metricCardinalityLimit,
     );
-    final explicitBounds = boundaries ?? const <double>[];
     final series = _series.putIfAbsent(
       _AttributeSetKey(resolvedAttributes),
       () => _HistogramSeries(
@@ -440,7 +445,6 @@ final class _HistogramMetric<T extends num>
 
   @override
   MetricData collect(Resource resource, {required int metricCardinalityLimit}) {
-    final explicitBounds = boundaries ?? const <double>[];
     return MetricData(
       name: name,
       description: description,
