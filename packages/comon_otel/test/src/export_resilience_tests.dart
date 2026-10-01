@@ -129,6 +129,39 @@ final class _ProbeLogProcessor implements LogProcessor {
   Future<void> shutdown() => probe.shutdown();
 }
 
+final class _FirstExportBlockingMetricExporter implements MetricExporter {
+  final Completer<void> release = Completer<void>();
+  final List<String> events = <String>[];
+  int calls = 0;
+
+  @override
+  Future<ExportResult> export(List<MetricData> metrics) async {
+    calls += 1;
+    final call = calls;
+    events.add('export$call-start');
+    if (call == 1) {
+      await release.future;
+    }
+    events.add('export$call-done');
+    return ExportResult.success;
+  }
+
+  @override
+  Future<void> forceFlush() async {}
+
+  @override
+  Future<void> shutdown() async {
+    events.add('shutdown');
+  }
+}
+
+Future<void> _waitFor(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 2));
+  while (!condition() && DateTime.now().isBefore(deadline)) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
 void defineExportResilienceTests() {
   group('export resilience', () {
     test('sync instruments drop non-finite measurements', () async {
@@ -555,6 +588,32 @@ void defineExportResilienceTests() {
       expect(result, ExportResult.success);
       expect(transport.requests, hasLength(2));
       expect(stopwatch.elapsed, greaterThan(const Duration(milliseconds: 900)));
+    });
+    test('forceFlush waits a bounded time for a stuck export', () async {
+      final exporter = _FirstExportBlockingMetricExporter();
+      final reader = PeriodicMetricReader(
+        exporter: exporter,
+        interval: const Duration(milliseconds: 20),
+        inFlightWaitLimit: const Duration(milliseconds: 200),
+      );
+      MeterProvider(
+        resource: Resource.empty(),
+        readers: <MetricReader>[reader],
+      ).getMeter('m').createIntCounter('c.flush').add(1);
+      await _waitFor(() => exporter.calls == 1);
+      expect(exporter.calls, 1);
+
+      final stopwatch = Stopwatch()..start();
+      await reader.forceFlush().timeout(const Duration(seconds: 3));
+      stopwatch.stop();
+
+      // Waited for the stuck export up to the limit, then ran its own.
+      expect(stopwatch.elapsed, greaterThan(const Duration(milliseconds: 150)));
+      expect(stopwatch.elapsed, lessThan(const Duration(milliseconds: 1500)));
+      expect(exporter.events, contains('export2-done'));
+
+      exporter.release.complete();
+      await reader.shutdown();
     });
   });
 }
