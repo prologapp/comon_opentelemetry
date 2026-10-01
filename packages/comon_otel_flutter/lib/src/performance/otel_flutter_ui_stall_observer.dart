@@ -16,6 +16,13 @@ typedef OtelFlutterElapsed = Duration Function();
 /// that never report a lifecycle, such as background workers) it is paused,
 /// so a process frozen in the background never shows up as a giant stall.
 /// Delays are measured on a monotonic clock, never on wall-clock time.
+///
+/// Known blind spot (deliberate): [AppLifecycleState.inactive] is also
+/// paused. On Android that covers a visible but unfocused app — multi-window
+/// / split screen, a system permission dialog, the notification shade pulled
+/// down — so UI stalls that happen in those states are not reported. The
+/// trade-off favours never emitting false stalls from a suspended process
+/// over covering those partially visible states.
 final class OtelFlutterUiStallObserver with WidgetsBindingObserver {
   /// Creates a UI stall observer.
   OtelFlutterUiStallObserver({
@@ -104,6 +111,11 @@ final class OtelFlutterUiStallObserver with WidgetsBindingObserver {
   /// Arms stall detection on [binding] (defaults to the current
   /// [WidgetsBinding]). Polling starts right away only if the app is already
   /// resumed; otherwise it starts on the next transition to resumed.
+  ///
+  /// Polling stops on every non-resumed state, including
+  /// [AppLifecycleState.inactive]: stalls while the app is visible but
+  /// unfocused (Android multi-window, permission dialog, notification shade)
+  /// are intentionally not measured — see the class documentation.
   void start({WidgetsBinding? binding}) {
     if (_binding != null) {
       return;
