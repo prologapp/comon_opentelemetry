@@ -6,6 +6,7 @@ import 'comon_otel_flutter_config.dart';
 import 'errors/otel_flutter_breadcrumbs.dart';
 import 'errors/otel_flutter_error_hooks.dart';
 import 'errors/otel_flutter_error_integration.dart';
+import 'errors/otel_flutter_error_rate_limiter.dart';
 import 'lifecycle/otel_flutter_binding_observer.dart';
 import 'navigation/otel_navigator_observer.dart';
 import 'performance/otel_flutter_frame_timing_observer.dart';
@@ -74,6 +75,10 @@ final class ComonOtelFlutter {
       breadcrumbListener: config.breadcrumbListener,
       frameworkErrorListener: config.frameworkErrorListener,
       platformErrorListener: config.platformErrorListener,
+    );
+    OtelFlutterErrorRateLimiter.configure(
+      maxPerMinute: config.maxErrorTelemetryPerGroupPerMinute,
+      now: config.now,
     );
     if (config.trackBreadcrumbs) {
       OtelFlutterBreadcrumbs.clear();
@@ -284,5 +289,6 @@ final class ComonOtelFlutterInstrumentation {
     }
     OtelFlutterErrorHooks.clear();
     OtelFlutterBreadcrumbs.clear();
+    OtelFlutterErrorRateLimiter.reset();
   }
 }

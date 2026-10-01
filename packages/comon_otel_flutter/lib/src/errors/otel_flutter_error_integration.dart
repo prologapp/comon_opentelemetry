@@ -7,6 +7,7 @@ import '../comon_otel_flutter_instrumentation.dart';
 import '../navigation/otel_flutter_route_context.dart';
 import 'otel_flutter_breadcrumbs.dart';
 import 'otel_flutter_error_hooks.dart';
+import 'otel_flutter_error_rate_limiter.dart';
 
 /// Captures a framework error and forwards it into OpenTelemetry.
 ///
@@ -38,6 +39,7 @@ void recordFlutterFrameworkError(
   _guarded(() {
     _recordErrorTelemetry(
       loggerName: loggerName,
+      source: 'framework',
       spanName: 'flutter.error',
       logBody: 'flutter.framework_error',
       attributes: attributes,
@@ -84,6 +86,7 @@ bool recordFlutterPlatformError(
   _guarded(() {
     _recordErrorTelemetry(
       loggerName: loggerName,
+      source: 'platform_dispatcher',
       spanName: 'flutter.platform_error',
       logBody: 'flutter.platform_error',
       attributes: attributes,
@@ -135,8 +138,37 @@ Map<String, Object> _guardedAttributes(
   }
 }
 
+/// Name of the counter of error occurrences not exported because their
+/// group exceeded [OtelFlutterErrorRateLimiter.maxPerMinute].
+const String _suppressedCountMetricName = 'flutter.error.suppressed.count';
+
+Otel? _suppressedCounterOwner;
+Counter<int>? _suppressedCounter;
+
+/// Counts one suppressed occurrence, labeled only with the closed-set
+/// `flutter.error.source` (never the high-cardinality group name).
+void _countSuppressed(String loggerName, String source) {
+  final otel = Otel.instance;
+  if (!identical(otel, _suppressedCounterOwner)) {
+    _suppressedCounterOwner = otel;
+    _suppressedCounter = otel.meterProvider
+        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .createIntCounter(
+          _suppressedCountMetricName,
+          description:
+              'Captured errors not exported as span and log because their '
+              'error.group.name exceeded the per-minute limit.',
+        );
+  }
+  _suppressedCounter!.add(
+    1,
+    attributes: <String, Object>{'flutter.error.source': source},
+  );
+}
+
 void _recordErrorTelemetry({
   required String loggerName,
+  required String source,
   required String spanName,
   required String logBody,
   required Map<String, Object> attributes,
@@ -145,6 +177,13 @@ void _recordErrorTelemetry({
   required String Function() describe,
 }) {
   if (!Otel.isInitialized) {
+    return;
+  }
+
+  final group = attributes['error.group.name'];
+  final groupKey = group is String ? group : '$source:${error.runtimeType}';
+  if (!OtelFlutterErrorRateLimiter.tryAcquire(groupKey)) {
+    _countSuppressed(loggerName, source);
     return;
   }
 

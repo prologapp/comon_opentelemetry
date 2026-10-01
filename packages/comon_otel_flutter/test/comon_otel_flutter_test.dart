@@ -73,6 +73,7 @@ void main() {
     OtelFlutterErrorHooks.clear();
     OtelFlutterBreadcrumbs.clear();
     OtelFlutterRouteContext.clear();
+    OtelFlutterErrorRateLimiter.reset();
   });
 
   test('mobileResourceAttributesFrom builds OTel resource attributes', () {
@@ -1738,6 +1739,133 @@ void main() {
       expect(phaseSpan.status, SpanStatus.error);
       _expectNoLeak(_flattenSpan(phaseSpan));
 
+      instrumentation.dispose();
+    });
+  });
+
+  group('error telemetry rate limit', () {
+    late DateTime fakeNow;
+
+    setUp(() {
+      fakeNow = DateTime.utc(2026, 10, 1, 12);
+      OtelFlutterErrorRateLimiter.configure(now: () => fakeNow);
+    });
+
+    Iterable<SpanData> spansNamed(String name) =>
+        spanExporter.spans.where((span) => span.name == name);
+    Iterable<LogRecord> logsWithBody(String body) =>
+        logExporter.logs.where((log) => log.body == body);
+
+    test('100 identical errors in a minute export 5 spans and 5 logs; '
+        'the fallback runs 100 times and the rest is counted', () async {
+      var fallbackCalls = 0;
+      for (var i = 0; i < 100; i++) {
+        // 100 errors spread over 50 s: all inside one window.
+        fakeNow = fakeNow.add(const Duration(milliseconds: 500));
+        recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: StateError('loop'),
+            stack: StackTrace.current,
+          ),
+          fallback: (_) => fallbackCalls += 1,
+        );
+      }
+      await Otel.forceFlush();
+
+      expect(fallbackCalls, 100);
+      expect(spansNamed('flutter.error'), hasLength(5));
+      expect(logsWithBody('flutter.framework_error'), hasLength(5));
+
+      final suppressed = metricExporter.lastMetricNamed(
+        'flutter.error.suppressed.count',
+      );
+      expect(suppressed, isNotNull);
+      expect(suppressed!.instrumentType, MetricInstrumentType.counter);
+      expect(suppressed.points.single.value, 95);
+      expect(suppressed.points.single.attributes, <String, Object>{
+        'flutter.error.source': 'framework',
+      });
+    });
+
+    test('a different group has its own quota, and a suppressed platform '
+        'error still returns the fallback verdict', () async {
+      var platformFallbackCalls = 0;
+      for (var i = 0; i < 8; i++) {
+        recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: StateError('a'),
+            stack: StackTrace.current,
+          ),
+          fallback: (_) {},
+        );
+      }
+      for (var i = 0; i < 8; i++) {
+        final handled = recordFlutterPlatformError(
+          ArgumentError('b'),
+          StackTrace.current,
+          fallback: (error, stackTrace) {
+            platformFallbackCalls += 1;
+            return true;
+          },
+        );
+        expect(handled, isTrue);
+      }
+      await Otel.forceFlush();
+
+      expect(spansNamed('flutter.error'), hasLength(5));
+      expect(spansNamed('flutter.platform_error'), hasLength(5));
+      expect(logsWithBody('flutter.platform_error'), hasLength(5));
+      expect(platformFallbackCalls, 8);
+    });
+
+    test('the quota renews after one minute', () async {
+      void fire() => recordFlutterFrameworkError(
+        FlutterErrorDetails(
+          exception: StateError('renew'),
+          stack: StackTrace.current,
+        ),
+        fallback: (_) {},
+      );
+
+      for (var i = 0; i < 7; i++) {
+        fire();
+      }
+      fakeNow = fakeNow.add(const Duration(seconds: 59));
+      fire();
+      await Otel.forceFlush();
+      expect(spansNamed('flutter.error'), hasLength(5));
+
+      fakeNow = fakeNow.add(const Duration(seconds: 1));
+      fire();
+      fire();
+      await Otel.forceFlush();
+      expect(spansNamed('flutter.error'), hasLength(7));
+      expect(logsWithBody('flutter.framework_error'), hasLength(7));
+    });
+
+    test('the limit comes from ComonOtelFlutterConfig', () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          trackAppStartup: false,
+          maxErrorTelemetryPerGroupPerMinute: 2,
+          now: () => fakeNow,
+        ),
+        flutterExceptionHandler: (_) {},
+      );
+
+      for (var i = 0; i < 4; i++) {
+        FlutterError.onError?.call(
+          FlutterErrorDetails(
+            exception: StateError('configured'),
+            stack: StackTrace.current,
+          ),
+        );
+      }
+      await Otel.forceFlush();
+
+      expect(spansNamed('flutter.error'), hasLength(2));
       instrumentation.dispose();
     });
   });

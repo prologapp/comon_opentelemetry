@@ -4,6 +4,7 @@ export 'errors/otel_flutter_breadcrumb_entry.dart';
 export 'errors/otel_flutter_error_integration.dart';
 export 'errors/otel_flutter_breadcrumbs.dart';
 export 'errors/otel_flutter_error_hooks.dart';
+export 'errors/otel_flutter_error_rate_limiter.dart';
 export 'interactions/interactions.dart';
 export 'lifecycle/otel_flutter_binding_observer.dart';
 export 'navigation/navigation.dart';
