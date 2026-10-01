@@ -30,6 +30,37 @@ MetricPoint _overflowPoint(MetricData metric) {
 
 void defineMetricAggregationTests() {
   group('metric aggregation', () {
+    test('retained state is bounded by series, not measurements', () {
+      final h = _isolatedMeterProvider();
+      final meter = h.provider.getMeter('m');
+      final counter = meter.createIntCounter('c.retention');
+      final histogram = meter.createHistogram(
+        'h.retention',
+        boundaries: <double>[1, 10, 100],
+      );
+      void recordRound(int i) {
+        final attributes = <String, Object>{'series': i % 3};
+        counter.add(1, attributes: attributes);
+        histogram.record((i % 200).toDouble(), attributes: attributes);
+      }
+
+      for (var i = 0; i < 100; i++) {
+        recordRound(i);
+      }
+      final counterEntries = debugRetainedEntryCount(counter);
+      final histogramEntries = debugRetainedEntryCount(histogram);
+      // 3 series + 3 retained attribute sets (+ 3 x 4 bucket slots).
+      expect(counterEntries, 6);
+      expect(histogramEntries, 18);
+
+      for (var i = 0; i < 100000; i++) {
+        recordRound(i);
+      }
+
+      expect(debugRetainedEntryCount(counter), counterEntries);
+      expect(debugRetainedEntryCount(histogram), histogramEntries);
+    });
+
     test('histogram bounds are fixed at creation', () async {
       final h = _isolatedMeterProvider();
       final bounds = <double>[1, 5];

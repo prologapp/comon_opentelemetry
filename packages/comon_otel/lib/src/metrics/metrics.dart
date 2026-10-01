@@ -1,7 +1,7 @@
 library;
 
 export 'instruments/instruments.dart';
-export 'meter.dart';
+export 'meter.dart' hide debugRetainedEntryCount;
 export 'meter_provider.dart';
 export 'metric_data.dart';
 export 'metric_extensions.dart';

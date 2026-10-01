@@ -1,3 +1,5 @@
+import 'package:meta/meta.dart';
+
 import '../core/instrumentation_scope.dart';
 import '../core/resource.dart';
 import 'instruments/counter.dart';
@@ -241,6 +243,24 @@ final class ObservableResult<T extends num> {
   }
 }
 
+/// Number of entries a synchronous instrument keeps in memory (series,
+/// retained attribute sets and histogram bucket slots). Test-only: lets
+/// tests assert that retention is bounded by the number of series, not by
+/// the number of measurements. Any new per-instrument store must be counted
+/// here.
+@visibleForTesting
+int debugRetainedEntryCount(Object instrument) {
+  return switch (instrument) {
+    _CounterMetric<num>() => instrument._retainedEntryCount,
+    _HistogramMetric<num>() => instrument._retainedEntryCount,
+    _ => throw ArgumentError.value(
+      instrument,
+      'instrument',
+      'Not a synchronous counter or histogram.',
+    ),
+  };
+}
+
 /// Resolves the provider's cardinality limit the same way
 /// [MeterProvider.collectAll] does (non-positive falls back to 2000).
 int _resolveMetricCardinalityLimit(int limit) => limit > 0 ? limit : 2000;
@@ -306,6 +326,8 @@ final class _CounterMetric<T extends num>
       <_AttributeSetKey, _SumSeries>{};
   final Map<_AttributeSetKey, Map<String, Object>> _retainedAttributeSets =
       <_AttributeSetKey, Map<String, Object>>{};
+
+  int get _retainedEntryCount => _series.length + _retainedAttributeSets.length;
 
   @override
   void add(T value, {Map<String, Object>? attributes}) {
@@ -395,6 +417,14 @@ final class _HistogramMetric<T extends num>
       <_AttributeSetKey, _HistogramSeries>{};
   final Map<_AttributeSetKey, Map<String, Object>> _retainedAttributeSets =
       <_AttributeSetKey, Map<String, Object>>{};
+
+  int get _retainedEntryCount =>
+      _series.length +
+      _retainedAttributeSets.length +
+      _series.values.fold<int>(
+        0,
+        (total, series) => total + series.bucketCounts.length,
+      );
 
   @override
   void record(T value, {Map<String, Object>? attributes}) {
