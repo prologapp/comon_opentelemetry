@@ -1237,6 +1237,62 @@ void main() {
   );
 
   test(
+    'a failure inside error telemetry never skips the fallback or its verdict',
+    () async {
+      OtelFlutterErrorHooks.configure(
+        frameworkErrorListener: (_) => throw StateError('listener boom'),
+        platformErrorListener: (_) => throw StateError('listener boom'),
+      );
+      var frameworkFallbackCalls = 0;
+      var platformFallbackCalls = 0;
+
+      expect(
+        () => recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: _ToStringThrows(),
+            stack: StackTrace.current,
+            informationCollector: () => throw StateError('collector boom'),
+          ),
+          fallback: (_) => frameworkFallbackCalls += 1,
+        ),
+        returnsNormally,
+      );
+      expect(frameworkFallbackCalls, 1);
+
+      late bool handled;
+      expect(
+        () => handled = recordFlutterPlatformError(
+          _ToStringThrows(),
+          StackTrace.current,
+          fallback: (error, stackTrace) {
+            platformFallbackCalls += 1;
+            return true;
+          },
+        ),
+        returnsNormally,
+      );
+      expect(platformFallbackCalls, 1);
+      expect(handled, isTrue);
+
+      // Same guarantee with the hooks healthy but the attribute building
+      // (exception.toString) failing.
+      OtelFlutterErrorHooks.clear();
+      expect(
+        recordFlutterPlatformError(
+          _ToStringThrows(),
+          StackTrace.current,
+          fallback: (error, stackTrace) {
+            platformFallbackCalls += 1;
+            return true;
+          },
+        ),
+        isTrue,
+      );
+      expect(platformFallbackCalls, 2);
+    },
+  );
+
+  test(
     'platform error handled flag reflects only the fallback, never Otel state',
     () async {
       expect(Otel.isInitialized, isTrue);
@@ -1546,4 +1602,9 @@ void main() {
       values.manufacturer,
     ], isNot(contains(piiDeviceName)));
   });
+}
+
+final class _ToStringThrows {
+  @override
+  String toString() => throw StateError('toString boom');
 }
