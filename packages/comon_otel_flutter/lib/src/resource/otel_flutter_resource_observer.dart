@@ -76,7 +76,8 @@ final class OtelFlutterResourceObserver {
   /// Whether to record battery level/state metrics.
   final bool trackBatteryMetrics;
 
-  /// Whether to count thermal state transitions.
+  /// Whether to count thermal state transitions (the first reading is the
+  /// baseline and is not counted).
   final bool trackThermalMetrics;
 
   /// Whether to record the process RSS gauge.
@@ -317,7 +318,8 @@ final class OtelFlutterResourceObserver {
       _thermalSubscription = thermalStateStreamGetter!().listen((state) {
         final previous = _lastThermalState;
         _lastThermalState = state;
-        if (previous == state) {
+        // The first reading is the baseline, not a transition.
+        if (previous == null || previous == state) {
           return;
         }
         _thermalCounter?.add(

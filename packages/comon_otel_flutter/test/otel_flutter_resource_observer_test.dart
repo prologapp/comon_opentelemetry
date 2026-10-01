@@ -246,12 +246,33 @@ void main() {
         final state = point.attributes['state'];
         countByState[state] = (countByState[state] ?? 0) + (point.value ?? 0);
       }
+      // 'nominal' is the initial reading (baseline), not a transition.
       expect(countByState, <String, num>{
-        'nominal': 1,
         'fair': 1,
         'serious': 1,
         'critical': 1,
       });
+
+      observer.dispose();
+      await controller.close();
+    });
+
+    test('the initial state is a baseline, not a transition', () async {
+      final controller = StreamController<String>();
+      final observer = OtelFlutterResourceObserver(
+        trackThermalMetrics: true,
+        thermalStateStreamGetter: () => controller.stream,
+      );
+
+      observer.start();
+      controller.add('nominal');
+      await Future<void>.delayed(Duration.zero);
+      await Otel.forceFlush();
+
+      expect(
+        metricExporter.lastMetricNamed('app.device.thermal.count'),
+        isNull,
+      );
 
       observer.dispose();
       await controller.close();
@@ -281,19 +302,20 @@ void main() {
       observer.start();
       expect(controller.hasListener, isTrue);
       controller.add('nominal');
+      controller.add('fair');
       await Future<void>.delayed(Duration.zero);
       observer.dispose();
       expect(controller.hasListener, isFalse);
 
-      controller.add('fair');
+      controller.add('serious');
       await Future<void>.delayed(Duration.zero);
       await Otel.forceFlush();
 
       final metric = metricExporter.lastMetricNamed(
         'app.device.thermal.count',
       );
-      // 'nominal' is the first observed state and counts once; the
-      // post-dispose 'fair' must not add a second count.
+      // nominal -> fair is the one transition; the post-dispose 'serious'
+      // must not add a second count.
       expect(metric, isNotNull);
       final totalCount = metric!.points.fold<num>(
         0,
@@ -337,9 +359,9 @@ void main() {
           0,
           (total, point) => total + (point.value ?? 0),
         );
-        // 'nominal' (first state) + 'fair' (real transition) despite the
-        // error in between = 2, the stream error itself must not count.
-        expect(totalCount, 2);
+        // 'nominal' is the baseline; 'fair' (real transition) still counts
+        // after the error in between, and the error itself never counts.
+        expect(totalCount, 1);
 
         observer.dispose();
         await controller.close();
@@ -347,35 +369,30 @@ void main() {
     );
 
     test('double start() does not leak/duplicate the subscription', () async {
-      final controller = StreamController<String>.broadcast();
+      final controllers = <StreamController<String>>[];
       final observer = OtelFlutterResourceObserver(
         trackThermalMetrics: true,
-        thermalStateStreamGetter: () => controller.stream,
+        thermalStateStreamGetter: () {
+          final controller = StreamController<String>();
+          controllers.add(controller);
+          return controller.stream;
+        },
       );
 
       observer.start();
       observer.start();
-      controller.add('nominal');
       await Future<void>.delayed(Duration.zero);
+
+      // Only the latest subscription stays alive.
+      expect(controllers, hasLength(2));
+      expect(controllers.first.hasListener, isFalse);
+      expect(controllers.last.hasListener, isTrue);
+
       observer.dispose();
-
-      controller.add('fair');
-      await Future<void>.delayed(Duration.zero);
-      await Otel.forceFlush();
-
-      final metric = metricExporter.lastMetricNamed(
-        'app.device.thermal.count',
-      );
-      expect(metric, isNotNull);
-      final totalCount = metric!.points.fold<num>(
-        0,
-        (total, point) => total + (point.value ?? 0),
-      );
-      // If start() leaked a duplicate subscription, 'nominal' would count
-      // twice (2) instead of once.
-      expect(totalCount, 1);
-
-      await controller.close();
+      expect(controllers.last.hasListener, isFalse);
+      for (final controller in controllers) {
+        await controller.close();
+      }
     });
   });
 
