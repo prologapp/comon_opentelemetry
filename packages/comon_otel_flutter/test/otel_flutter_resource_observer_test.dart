@@ -272,6 +272,42 @@ void main() {
       await controller.close();
     });
 
+    test(
+      'a restart takes a fresh baseline (no transition across subscriptions)',
+      () async {
+        final controllers = <StreamController<String>>[];
+        final observer = OtelFlutterResourceObserver(
+          trackThermalMetrics: true,
+          thermalStateStreamGetter: () {
+            final controller = StreamController<String>();
+            controllers.add(controller);
+            return controller.stream;
+          },
+        );
+
+        observer.start();
+        controllers.last.add('nominal');
+        await Future<void>.delayed(Duration.zero);
+        observer.dispose();
+
+        observer.start();
+        controllers.last.add('fair');
+        await Future<void>.delayed(Duration.zero);
+        await Otel.forceFlush();
+
+        // Each subscription's first reading is its own baseline.
+        expect(
+          metricExporter.lastMetricNamed('app.device.thermal.count'),
+          isNull,
+        );
+
+        observer.dispose();
+        for (final controller in controllers) {
+          await controller.close();
+        }
+      },
+    );
+
     test('a stream that never emits leaves the counter empty', () async {
       final observer = OtelFlutterResourceObserver(
         trackThermalMetrics: true,

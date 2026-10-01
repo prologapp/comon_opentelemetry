@@ -315,6 +315,10 @@ final class OtelFlutterResourceObserver {
 
     if (trackThermalMetrics && thermalStateStreamGetter != null) {
       unawaited(_thermalSubscription?.cancel());
+      // Every subscription takes its own baseline: a state remembered from a
+      // previous subscription must not turn the first new reading into a
+      // transition.
+      _lastThermalState = null;
       _thermalSubscription = thermalStateStreamGetter!().listen(
         (state) {
           final previous = _lastThermalState;
