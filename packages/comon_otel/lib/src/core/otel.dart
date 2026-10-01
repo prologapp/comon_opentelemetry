@@ -286,7 +286,10 @@ final class Otel {
 
     final processors = resolvedSdkDisabled
         ? const <SpanProcessor>[]
-        : <SpanProcessor>[SessionSpanProcessor(), ..._buildSpanProcessors(config)];
+        : <SpanProcessor>[
+            SessionSpanProcessor(),
+            ..._buildSpanProcessors(config),
+          ];
     final tracerProvider = TracerProvider(
       resource: resource,
       spanProcessors: processors,
@@ -323,13 +326,15 @@ final class Otel {
         previousSessionId.isNotEmpty &&
         previousSessionId != OtelSession.id &&
         OtelSession.claimRotationEmission()) {
-      final span = tracerProvider.getTracer('comon_otel').startSpan(
-        'session.rotation',
-        attributes: <String, Object>{
-          SemanticAttributes.sessionId: OtelSession.id,
-          SemanticAttributes.sessionPreviousId: previousSessionId,
-        },
-      );
+      final span = tracerProvider
+          .getTracer('comon_otel')
+          .startSpan(
+            'session.rotation',
+            attributes: <String, Object>{
+              SemanticAttributes.sessionId: OtelSession.id,
+              SemanticAttributes.sessionPreviousId: previousSessionId,
+            },
+          );
       await span.end();
     }
   }
