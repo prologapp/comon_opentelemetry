@@ -16,6 +16,7 @@ final class BatchLogProcessor implements LogProcessor {
     this.scheduleDelay = const Duration(seconds: 1),
     this.maxQueueSize = 2048,
     this.exportTimeout,
+    this.flushWaitLimit = const Duration(seconds: 2),
     this.onDrop,
   }) : _exporter = exporter {
     _timer = Timer.periodic(scheduleDelay, (_) {
@@ -42,6 +43,27 @@ final class BatchLogProcessor implements LogProcessor {
 
   /// Optional timeout applied to each export operation.
   final Duration? exportTimeout;
+
+  /// Tempo máximo que [forceFlush] e [shutdown] seguram o chamador. Cobre o
+  /// flush inteiro (exports em fila mais o forceFlush/shutdown do exporter),
+  /// não só um export já em voo: por isso não é o `inFlightWaitLimit` do
+  /// `PeriodicMetricReader`, embora a semântica seja a mesma (espera limitada,
+  /// nenhum erro propagado, export em voo não cancelado).
+  ///
+  /// Estourado o prazo, o chamador segue e o flush continua em segundo plano,
+  /// do jeito que já rodava: o processador não cancela o export em voo, só
+  /// deixa de aguardá-lo. Enquanto os exports concluem, o restante da fila é
+  /// exportado e, no [shutdown], o exporter só é desligado depois do último.
+  /// Um export que falha ou estoura [exportTimeout] encerra o ciclo ali, como
+  /// antes: o restante fica na fila (no [shutdown], perdido) e o exporter é
+  /// desligado com aquele export possivelmente ainda em voo.
+  ///
+  /// Padrão de 2 s, o mesmo do `PeriodicMetricReader`. Sem prazo, um coletor
+  /// que aceita e não responde segurava o chamador por 30 s (shutdown) e até
+  /// 122 s (forceFlush de 1.536 spans = 12 exports seriais); e como
+  /// `Otel.forceFlush`/`Otel.shutdown` percorrem traces, métricas e logs em
+  /// série, um flush de traces travado atrasava o de logs pelo mesmo tempo.
+  final Duration flushWaitLimit;
 
   /// Invoked once for each record evicted because the queue reached
   /// [maxQueueSize]. Lets the host observe export saturation (drop count).
@@ -91,7 +113,9 @@ final class BatchLogProcessor implements LogProcessor {
 
   @override
   /// Flushes queued records and then flushes the exporter.
-  Future<void> forceFlush() async {
+  ///
+  /// Espera no máximo [flushWaitLimit]; ver o campo.
+  Future<void> forceFlush() => _waitBounded(() async {
     await _flushBatch(all: true);
     try {
       await _exporter.forceFlush();
@@ -99,21 +123,36 @@ final class BatchLogProcessor implements LogProcessor {
       // Telemetry teardown must never throw into the host. SDK-level error
       // reporting is tracked separately (F2.2, out of scope here).
     }
-  }
+  });
 
   @override
   /// Stops the processor, flushes queued records, and shuts down the exporter.
+  ///
+  /// Espera no máximo [flushWaitLimit]; ver o campo.
   Future<void> shutdown() async {
     if (_isShutdown) {
       return;
     }
     _isShutdown = true;
     _timer?.cancel();
-    await _flushBatch(all: true);
+    await _waitBounded(() async {
+      await _flushBatch(all: true);
+      try {
+        await _exporter.shutdown();
+      } catch (_) {
+        // See forceFlush: teardown failures are swallowed by design.
+      }
+    });
+  }
+
+  /// Aguarda [body] por no máximo [flushWaitLimit]. Estourado o prazo, [body]
+  /// segue rodando sem ser aguardado. Nunca lança: [body] já engole as
+  /// próprias falhas, e o timeout é engolido aqui.
+  Future<void> _waitBounded(Future<void> Function() body) async {
     try {
-      await _exporter.shutdown();
+      await body().timeout(flushWaitLimit);
     } catch (_) {
-      // See forceFlush: teardown failures are swallowed by design.
+      // Telemetria nunca lança no host; o prazo estourado não é erro.
     }
   }
 
