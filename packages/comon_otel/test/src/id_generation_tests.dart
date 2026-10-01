@@ -86,27 +86,43 @@ void defineIdGenerationTests() {
         _secureBytewiseHex(secure, 16);
       }
 
-      final reference = Stopwatch()..start();
-      for (var i = 0; i < rounds; i++) {
-        _secureBytewiseHex(secure, 32);
-        _secureBytewiseHex(secure, 16);
+      // Best of 5 runs per side: a process pause (GC, scheduler) during one
+      // loop inflates that sample only, not the minimum. The measured margin
+      // is ~600x; the bound required here is 5x.
+      int bestOf5(void Function() body) {
+        var best = 1 << 62;
+        for (var r = 0; r < 5; r++) {
+          final watch = Stopwatch()..start();
+          body();
+          watch.stop();
+          if (watch.elapsedMicroseconds < best) {
+            best = watch.elapsedMicroseconds;
+          }
+        }
+        return best;
       }
-      reference.stop();
 
-      final startSpan = Stopwatch()..start();
-      for (var i = 0; i < rounds; i++) {
-        tracer.startSpan('s');
-      }
-      startSpan.stop();
+      final referenceMicros = bestOf5(() {
+        for (var i = 0; i < rounds; i++) {
+          _secureBytewiseHex(secure, 32);
+          _secureBytewiseHex(secure, 16);
+        }
+      });
+
+      final startSpanMicros = bestOf5(() {
+        for (var i = 0; i < rounds; i++) {
+          tracer.startSpan('s');
+        }
+      });
 
       // A whole span start (ids included) must cost a fraction of what the
       // old id generation alone cost.
       expect(
-        startSpan.elapsedMicroseconds,
-        lessThan(reference.elapsedMicroseconds / 5),
+        startSpanMicros,
+        lessThan(referenceMicros / 5),
         reason:
-            'startSpan: ${startSpan.elapsed} vs per-byte secure ids: '
-            '${reference.elapsed} for $rounds spans',
+            'startSpan: ${startSpanMicros}us vs per-byte secure ids: '
+            '${referenceMicros}us for $rounds spans (best of 5)',
       );
     });
   });
