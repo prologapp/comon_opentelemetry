@@ -56,8 +56,12 @@ final class BatchLogProcessor implements LogProcessor {
     }
 
     if (_queue.length >= maxQueueSize) {
-      onDrop?.call();
       _queue.removeFirst();
+      try {
+        onDrop?.call();
+      } catch (_) {
+        // A host callback must never break the processor nor the caller.
+      }
     }
     _queue.addLast(record);
 

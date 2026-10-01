@@ -111,5 +111,57 @@ void defineBatchProcessorHealthTests() {
       expect(drops, 3);
       expect(processor.queueLength, 2);
     });
+    test('a throwing onDrop never breaks span end nor the queue cap', () async {
+      var drops = 0;
+      final processor = BatchSpanProcessor(
+        exporter: InMemorySpanExporter(),
+        maxBatchSize: 1000,
+        maxQueueSize: 2,
+        scheduleDelay: const Duration(hours: 1),
+        onDrop: () {
+          drops++;
+          throw StateError('host drop hook failed');
+        },
+      );
+      final tracer = TracerProvider(
+        resource: Resource.empty(),
+        spanProcessors: <SpanProcessor>[processor],
+        sampler: const AlwaysOnSampler(),
+      ).getTracer('t');
+
+      for (var i = 0; i < 5; i++) {
+        await tracer.startSpan('drop-$i').end();
+      }
+
+      expect(drops, 3);
+      expect(processor.queueLength, 2);
+      await processor.shutdown();
+    });
+
+    test('a throwing onDrop never breaks log emit nor the queue cap', () async {
+      var drops = 0;
+      final processor = BatchLogProcessor(
+        exporter: InMemoryLogExporter(),
+        maxBatchSize: 1000,
+        maxQueueSize: 2,
+        scheduleDelay: const Duration(hours: 1),
+        onDrop: () {
+          drops++;
+          throw StateError('host drop hook failed');
+        },
+      );
+      final logger = LoggerProvider(
+        resource: Resource.empty(),
+        logProcessors: <LogProcessor>[processor],
+      ).getLogger('l');
+
+      for (var i = 0; i < 5; i++) {
+        logger.info('drop-$i');
+      }
+
+      expect(drops, 3);
+      expect(processor.queueLength, 2);
+      await processor.shutdown();
+    });
   });
 }
