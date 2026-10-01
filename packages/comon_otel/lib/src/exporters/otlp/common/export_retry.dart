@@ -40,7 +40,7 @@ Future<ExportResult> executeOtlpExportWithRetry({
     try {
       final response = await send();
       if (response.isSuccess) {
-        onSuccessResponse?.call(response);
+        _reportSuccessResponse(() => onSuccessResponse?.call(response));
         return ExportResult.success;
       }
 
@@ -88,7 +88,7 @@ Future<ExportResult> executeOtlpGrpcExportWithRetry({
 
     try {
       final responseBytes = await send();
-      onSuccessResponse?.call(responseBytes);
+      _reportSuccessResponse(() => onSuccessResponse?.call(responseBytes));
       return ExportResult.success;
     } on OtlpGrpcTransportException catch (error) {
       if (!error.retryable || attempt >= retry.maxAttempts) {
@@ -111,4 +111,16 @@ Future<ExportResult> executeOtlpGrpcExportWithRetry({
   }
 
   return ExportResult.failure;
+}
+
+/// Runs the partial-success handler of a response the server already
+/// accepted. A body it cannot parse (e.g. a captive portal answering 200
+/// with HTML) must not turn the export into a failure: that would make the
+/// retry loop resend a batch the server has already taken.
+void _reportSuccessResponse(void Function() report) {
+  try {
+    report();
+  } catch (_) {
+    // Partial-success reporting is best effort.
+  }
 }

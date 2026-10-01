@@ -281,5 +281,37 @@ void defineExportResilienceTests() {
       expect(result, ExportResult.success);
       expect(transport.requests, hasLength(2));
     });
+    test('a 2xx with an unparseable body is a success, not a retry', () async {
+      const retry = OtlpRetryConfig(
+        maxAttempts: 3,
+        initialDelay: Duration.zero,
+        maxDelay: Duration.zero,
+      );
+      final http = _SequencedOtlpHttpTransport(<Object>[
+        for (var i = 0; i < 3; i++)
+          const OtlpHttpResponse(statusCode: 200, body: '<html>portal</html>'),
+      ]);
+      final httpResult = await OtlpHttpJsonSpanExporter(
+        endpoint: 'https://collector.example.com',
+        transport: http,
+        retry: retry,
+      ).export(const <SpanData>[]);
+
+      expect(httpResult, ExportResult.success);
+      expect(http.requests, hasLength(1));
+
+      final grpc = _SequencedOtlpGrpcTransport(<Object>[
+        // Truncated partial_success message: the parser throws on it.
+        for (var i = 0; i < 3; i++) <int>[0x0a, 0x05, 0x08],
+      ]);
+      final grpcResult = await OtlpGrpcSpanExporter(
+        endpoint: 'http://collector.example.com:4317',
+        transport: grpc,
+        retry: retry,
+      ).export(const <SpanData>[]);
+
+      expect(grpcResult, ExportResult.success);
+      expect(grpc.requests, hasLength(1));
+    });
   });
 }
