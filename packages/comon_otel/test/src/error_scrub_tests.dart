@@ -177,7 +177,7 @@ void defineErrorScrubTests() {
 
       final decoded = jsonDecode(scrubUrls(json)) as Map<String, dynamic>;
 
-      expect(decoded['url'], isNot(contains('/p/1')));
+      expect(decoded['url'], 'https://h.com/…');
       expect(decoded['next'], 'x');
     });
 
