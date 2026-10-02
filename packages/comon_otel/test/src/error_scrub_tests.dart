@@ -153,6 +153,57 @@ void defineErrorScrubTests() {
       expect(output, endsWith('://host/…'));
       expect(scrubUrls(output), output);
     });
+
+    // Corpo de log do app é JSON serializado: a aspa escapada (`\"`) que
+    // fecha a URL tem de sobreviver, senão o JSON exportado quebra.
+    test('keeps a JSON-escaped quote after the URL, so the JSON decodes', () {
+      final json = jsonEncode(<String, String>{
+        'error': 'erro uri: "https://h.com/p/1" fim',
+      });
+
+      final output = scrubUrls(json);
+
+      final decoded = jsonDecode(output) as Map<String, dynamic>;
+      expect(decoded.keys, <String>['error']);
+      expect(decoded['error'], 'erro uri: "https://h.com/…" fim');
+      expect(decoded['error'], isNot(contains('/p/1')));
+    });
+
+    test('keeps the JSON valid when the URL ends in an escaped backslash', () {
+      final json = jsonEncode(<String, String>{
+        'url': r'https://h.com/p/1\',
+        'next': 'x',
+      });
+
+      final decoded = jsonDecode(scrubUrls(json)) as Map<String, dynamic>;
+
+      expect(decoded['url'], 'https://h.com/…');
+      expect(decoded['next'], 'x');
+    });
+
+    test('consumes JSON-escaped slashes in the path', () {
+      for (final input in <String>[
+        r'https://h.com/a\/12345678900',
+        r'https://h.com\/a\/12345678900',
+      ]) {
+        final output = scrubUrls(input);
+        expect(output, isNot(contains('12345678900')), reason: input);
+        expect(output, 'https://h.com/…', reason: input);
+      }
+    });
+
+    test('is idempotent on JSON-escaped text', () {
+      for (final input in <String>[
+        jsonEncode(<String, String>{
+          'error': 'erro uri: "https://h.com/p/1" fim',
+        }),
+        jsonEncode(<String, String>{'url': r'https://h.com/p/1\'}),
+        r'https://h.com/a\/12345678900',
+      ]) {
+        final once = scrubUrls(input);
+        expect(scrubUrls(once), once, reason: input);
+      }
+    });
   });
 
   group('error text never carries a URL path or query', () {
@@ -351,6 +402,21 @@ void defineErrorScrubTests() {
       final log = logExporter.lastLogNamed('scrub-bridge-body')!;
       expect(log.body, 'GET https://bucket.s3.amazonaws.com/… failed');
       _expectNoLeak(_flattenLog(log));
+    });
+
+    test('a JSON body stays valid JSON after the scrub', () async {
+      final body = jsonEncode(<String, Object>{
+        'error': 'erro uri: "https://h.com/p/1" fim',
+        'code': 500,
+      });
+      Otel.instance.loggerProvider.getLogger('scrub-json-body').error(body);
+      await Otel.forceFlush();
+
+      final log = logExporter.lastLogNamed('scrub-json-body')!;
+      final decoded = jsonDecode(log.body) as Map<String, dynamic>;
+      expect(decoded.keys, unorderedEquals(<String>['error', 'code']));
+      expect(decoded['error'], 'erro uri: "https://h.com/…" fim');
+      expect(decoded['code'], 500);
     });
 
     test('the body is scrubbed before it is cut to the body limit', () async {
