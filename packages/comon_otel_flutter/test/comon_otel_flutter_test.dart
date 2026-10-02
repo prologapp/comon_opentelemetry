@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:comon_otel/comon_otel.dart';
@@ -19,6 +20,24 @@ final class _CountingSpanExporter implements SpanExporter {
   @override
   Future<void> forceFlush() async {
     forceFlushCount += 1;
+  }
+
+  @override
+  Future<void> shutdown() async {}
+}
+
+final class _ThrowingFlushSpanExporter implements SpanExporter {
+  bool failFlush = true;
+
+  @override
+  Future<ExportResult> export(List<SpanData> data) async =>
+      ExportResult.success;
+
+  @override
+  Future<void> forceFlush() async {
+    if (failFlush) {
+      throw StateError('flush boom');
+    }
   }
 
   @override
@@ -114,9 +133,44 @@ void main() {
       contains('flutter.first_frame'),
     );
     expect(startupSpan.attributes['flutter.startup.completed'], true);
+    expect(
+      logExporter.logs.where((log) => log.body == 'app.first_frame'),
+      hasLength(1),
+    );
 
     instrumentation.dispose();
   });
+
+  test(
+    'completeStartup with markFirstFrame:false emits no first-frame marker',
+    () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+        ),
+      );
+      addTearDown(instrumentation.dispose);
+
+      // Closed explicitly by the host (not at the first frame).
+      await instrumentation.startupTracker!.completeStartup();
+      await Otel.forceFlush();
+
+      final rootSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'app.startup',
+      );
+      expect(rootSpan.attributes['flutter.startup.completed'], true);
+      expect(
+        rootSpan.events.map((event) => event.name),
+        isNot(contains('flutter.first_frame')),
+      );
+      expect(
+        logExporter.logs.where((log) => log.body == 'app.first_frame'),
+        isEmpty,
+      );
+    },
+  );
 
   test('startPhase creates a child span of the startup root', () async {
     final instrumentation = ComonOtelFlutter.install(
@@ -141,49 +195,49 @@ void main() {
     final exportedPhaseSpan = spanExporter.spans.singleWhere(
       (span) => span.name == 'app.startup.di',
     );
-    expect(exportedPhaseSpan.parentSpanContext?.spanId, rootSpan.spanContext.spanId);
+    expect(
+      exportedPhaseSpan.parentSpanContext?.spanId,
+      rootSpan.spanContext.spanId,
+    );
 
     instrumentation.dispose();
   });
 
-  test(
-    'trackPhase records a span and a histogram sample on success',
-    () async {
-      final instrumentation = ComonOtelFlutter.install(
-        config: const ComonOtelFlutterConfig(
-          observeAppLifecycle: false,
-          trackNavigatorRoutes: false,
-          markFirstFrame: false,
-        ),
-      );
+  test('trackPhase records a span and a histogram sample on success', () async {
+    final instrumentation = ComonOtelFlutter.install(
+      config: const ComonOtelFlutterConfig(
+        observeAppLifecycle: false,
+        trackNavigatorRoutes: false,
+        markFirstFrame: false,
+      ),
+    );
 
-      final result = await instrumentation.startupTracker!.trackPhase<int>(
-        'firebase',
-        () async {
-          await Future<void>.delayed(const Duration(milliseconds: 5));
-          return 42;
-        },
-      );
-      await Otel.forceFlush();
+    final result = await instrumentation.startupTracker!.trackPhase<int>(
+      'firebase',
+      () async {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        return 42;
+      },
+    );
+    await Otel.forceFlush();
 
-      expect(result, 42);
-      final phaseSpan = spanExporter.spans.singleWhere(
-        (span) => span.name == 'app.startup.firebase',
-      );
-      expect(phaseSpan.attributes['app.startup.phase'], 'firebase');
-      expect(phaseSpan.status, SpanStatus.ok);
+    expect(result, 42);
+    final phaseSpan = spanExporter.spans.singleWhere(
+      (span) => span.name == 'app.startup.firebase',
+    );
+    expect(phaseSpan.attributes['app.startup.phase'], 'firebase');
+    expect(phaseSpan.status, SpanStatus.ok);
 
-      final histogram = metricExporter.lastMetricNamed(
-        'app.startup.phase.duration',
-      );
-      expect(histogram, isNotNull);
-      final point = histogram!.points.single;
-      expect(point.count, 1);
-      expect(point.attributes['app.startup.phase'], 'firebase');
+    final histogram = metricExporter.lastMetricNamed(
+      'app.startup.phase.duration',
+    );
+    expect(histogram, isNotNull);
+    final point = histogram!.points.single;
+    expect(point.count, 1);
+    expect(point.attributes['app.startup.phase'], 'firebase');
 
-      instrumentation.dispose();
-    },
-  );
+    instrumentation.dispose();
+  });
 
   test(
     'trackPhase records the error status and histogram, then rethrows',
@@ -248,9 +302,7 @@ void main() {
 
       expect(result, 7);
       expect(
-        spanExporter.spans.any(
-          (span) => span.name == 'app.startup.migrations',
-        ),
+        spanExporter.spans.any((span) => span.name == 'app.startup.migrations'),
         isFalse,
       );
 
@@ -367,9 +419,7 @@ void main() {
       await Otel.forceFlush();
 
       expect(
-        spanExporter.spans.any(
-          (span) => span.name == 'app.startup.migrations',
-        ),
+        spanExporter.spans.any((span) => span.name == 'app.startup.migrations'),
         isFalse,
       );
 
@@ -395,6 +445,7 @@ void main() {
           markFirstFrame: false,
         ),
       );
+      addTearDown(instrumentation.dispose);
       final tracker = instrumentation.startupTracker!;
 
       await Otel.shutdown();
@@ -410,70 +461,80 @@ void main() {
     },
   );
 
-  test('startPhase and trackPhase are no-ops when Otel is not initialized', () async {
-    await Otel.shutdown();
+  test(
+    'startPhase and trackPhase are no-ops when Otel is not initialized',
+    () async {
+      await Otel.shutdown();
 
-    final instrumentation = ComonOtelFlutter.install(
-      config: const ComonOtelFlutterConfig(
-        observeAppLifecycle: false,
-        trackNavigatorRoutes: false,
-        markFirstFrame: false,
-      ),
-    );
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+        ),
+      );
+      addTearDown(instrumentation.dispose);
 
-    expect(instrumentation.startupTracker, isNull);
-  });
+      expect(instrumentation.startupTracker, isNull);
+    },
+  );
 
-  test('setStartupAttribute sets the value on the root span before end, is a no-op after', () async {
-    final instrumentation = ComonOtelFlutter.install(
-      config: const ComonOtelFlutterConfig(
-        observeAppLifecycle: false,
-        trackNavigatorRoutes: false,
-        markFirstFrame: false,
-      ),
-    );
+  test(
+    'setStartupAttribute sets the value on the root span before end, is a no-op after',
+    () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+        ),
+      );
 
-    instrumentation.startupTracker!.setStartupAttribute(
-      'launch.source',
-      'push',
-    );
-    await instrumentation.startupTracker!.completeStartup();
-    // No-op after end: must not throw, and must not overwrite what was
-    // already recorded on the (now ended) root span.
-    instrumentation.startupTracker!.setStartupAttribute(
-      'launch.source',
-      'normal',
-    );
-    await Otel.forceFlush();
+      instrumentation.startupTracker!.setStartupAttribute(
+        'launch.source',
+        'push',
+      );
+      await instrumentation.startupTracker!.completeStartup();
+      // No-op after end: must not throw, and must not overwrite what was
+      // already recorded on the (now ended) root span.
+      instrumentation.startupTracker!.setStartupAttribute(
+        'launch.source',
+        'normal',
+      );
+      await Otel.forceFlush();
 
-    final startupSpan = spanExporter.spans.singleWhere(
-      (span) => span.name == 'app.startup',
-    );
-    expect(startupSpan.attributes['launch.source'], 'push');
+      final startupSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'app.startup',
+      );
+      expect(startupSpan.attributes['launch.source'], 'push');
 
-    instrumentation.dispose();
-  });
+      instrumentation.dispose();
+    },
+  );
 
-  test('appStartupAttributes are present on the root span from creation', () async {
-    final instrumentation = ComonOtelFlutter.install(
-      config: const ComonOtelFlutterConfig(
-        observeAppLifecycle: false,
-        trackNavigatorRoutes: false,
-        markFirstFrame: false,
-        appStartupAttributes: <String, Object>{'launch.source': 'normal'},
-      ),
-    );
+  test(
+    'appStartupAttributes are present on the root span from creation',
+    () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+          appStartupAttributes: <String, Object>{'launch.source': 'normal'},
+        ),
+      );
 
-    await instrumentation.startupTracker!.completeStartup();
-    await Otel.forceFlush();
+      await instrumentation.startupTracker!.completeStartup();
+      await Otel.forceFlush();
 
-    final startupSpan = spanExporter.spans.singleWhere(
-      (span) => span.name == 'app.startup',
-    );
-    expect(startupSpan.attributes['launch.source'], 'normal');
+      final startupSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'app.startup',
+      );
+      expect(startupSpan.attributes['launch.source'], 'normal');
 
-    instrumentation.dispose();
-  });
+      instrumentation.dispose();
+    },
+  );
 
   test(
     'staticMetricAttributes are merged into frame, stall, and startup-phase metrics with per-record override',
@@ -496,10 +557,7 @@ void main() {
       instrumentation.uiStallObserver!.recordTick(
         DateTime.utc(2026, 1, 1, 0, 0, 1),
       );
-      await instrumentation.startupTracker!.trackPhase<void>(
-        'di',
-        () async {},
-      );
+      await instrumentation.startupTracker!.trackPhase<void>('di', () async {});
       await Otel.forceFlush();
 
       final frameMetric = metricExporter.lastMetricNamed(
@@ -561,7 +619,6 @@ void main() {
   for (final state in <AppLifecycleState>[
     AppLifecycleState.paused,
     AppLifecycleState.detached,
-    AppLifecycleState.hidden,
   ]) {
     test('flushes telemetry when the app is backgrounded ($state)', () async {
       TestWidgetsFlutterBinding.ensureInitialized();
@@ -586,6 +643,108 @@ void main() {
       await Otel.shutdown();
     });
   }
+
+  group('background flush policy', () {
+    late _CountingSpanExporter spans;
+    late InMemoryLogExporter logs;
+
+    setUp(() async {
+      spans = _CountingSpanExporter();
+      logs = InMemoryLogExporter();
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'lifecycle-test',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(spans)],
+        metricReaders: const <MetricReader>[],
+        // Long schedule: a record only reaches the exporter through a flush.
+        logProcessors: <LogProcessor>[
+          BatchLogProcessor(
+            exporter: logs,
+            scheduleDelay: const Duration(hours: 1),
+          ),
+        ],
+      );
+    });
+
+    tearDown(Otel.shutdown);
+
+    Future<void> drain() => Future<void>.delayed(Duration.zero);
+
+    test('detached always flushes, so its own log is exported', () async {
+      final observer = OtelFlutterBindingObserver();
+      observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
+      observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await drain();
+      observer.didChangeAppLifecycleState(AppLifecycleState.detached);
+      await drain();
+
+      // paused + detached.
+      expect(spans.forceFlushCount, 2);
+      expect(
+        logs.logs.where(
+          (log) => log.attributes['flutter.lifecycle.state'] == 'detached',
+        ),
+        hasLength(1),
+      );
+    });
+
+    test('repeated paused without resuming flushes once', () async {
+      final observer = OtelFlutterBindingObserver();
+      observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
+      observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+      // Back and forth between background states without reaching resumed.
+      observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await drain();
+
+      expect(spans.forceFlushCount, 1);
+    });
+
+    test('returning to resumed re-arms the flush for the next trip', () async {
+      final observer = OtelFlutterBindingObserver();
+      for (var trip = 0; trip < 2; trip++) {
+        observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        observer.didChangeAppLifecycleState(AppLifecycleState.inactive);
+        observer.didChangeAppLifecycleState(AppLifecycleState.hidden);
+        observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+        await drain();
+      }
+
+      expect(spans.forceFlushCount, 2);
+    });
+  });
+
+  test(
+    'a failing background flush never surfaces as an unhandled error',
+    () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final exporter = _ThrowingFlushSpanExporter();
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'lifecycle-test',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
+        metricReaders: const <MetricReader>[],
+        logProcessors: const <LogProcessor>[],
+      );
+
+      final uncaught = <Object>[];
+      await runZonedGuarded(() async {
+        final observer = OtelFlutterBindingObserver();
+        observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+        observer.didChangeAppLifecycleState(AppLifecycleState.detached);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }, (error, stackTrace) => uncaught.add(error));
+
+      exporter.failFlush = false;
+      await Otel.shutdown();
+      expect(uncaught, isEmpty);
+    },
+  );
 
   test('does not flush on non-backgrounding lifecycle states', () async {
     TestWidgetsFlutterBinding.ensureInitialized();
@@ -687,7 +846,8 @@ void main() {
       );
       expect(frameworkFallbackCalls, 1);
       expect(platformFallbackCalls, 1);
-      expect(platformHandled, isTrue);
+      // The fallback returned false: the error stays unhandled.
+      expect(platformHandled, isFalse);
     },
   );
 
@@ -950,6 +1110,248 @@ void main() {
     },
   );
 
+  test(
+    'ui stall metrics keep a constant series count regardless of stall delays',
+    () async {
+      final observer = OtelFlutterUiStallObserver(
+        checkInterval: const Duration(milliseconds: 50),
+        threshold: const Duration(milliseconds: 100),
+        staticAttributes: const <String, Object>{'device.tier': 'low'},
+      );
+      var at = DateTime.utc(2026, 3, 20, 12, 0, 0);
+      observer.recordTick(at);
+      final delaysMs = <int>[];
+      for (var i = 0; i < 25; i++) {
+        final delayMs = 150 + i * 37;
+        delaysMs.add(delayMs);
+        at = at.add(Duration(milliseconds: 50 + delayMs));
+        observer.recordTick(at);
+      }
+      await Otel.forceFlush();
+
+      final durationMetric = metricExporter.lastMetricNamed(
+        'flutter.ui.stall.duration',
+      )!;
+      final countMetric = metricExporter.lastMetricNamed(
+        'flutter.ui.stall.count',
+      )!;
+      // One attribute set per instrument, no matter how many distinct
+      // delays: the delay is the histogram VALUE, never a label.
+      expect(durationMetric.points, hasLength(1));
+      expect(countMetric.points, hasLength(1));
+      expect(durationMetric.points.single.count, delaysMs.length);
+      expect(
+        durationMetric.points.single.sum,
+        closeTo(delaysMs.fold<int>(0, (a, b) => a + b), 0.001),
+      );
+      expect(countMetric.points.single.value, delaysMs.length);
+      expect(durationMetric.points.single.attributes, const <String, Object>{
+        'device.tier': 'low',
+      });
+
+      // The per-stall detail stays available on the log record.
+      final stallLogs = logExporter.logs.where(
+        (log) => log.body == 'flutter.ui_stall',
+      );
+      expect(stallLogs, hasLength(delaysMs.length));
+      expect(stallLogs.first.attributes['flutter.ui_stall.delay_ms'], 150.0);
+    },
+  );
+
+  testWidgets(
+    'ui stall timer only measures while resumed (no false stall after a freeze)',
+    (tester) async {
+      var wallClock = DateTime.utc(2026, 3, 20, 12, 0, 0);
+      var monotonic = Duration.zero;
+      void advance(Duration by) {
+        wallClock = wallClock.add(by);
+        monotonic += by;
+      }
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final observer = OtelFlutterUiStallObserver(
+        checkInterval: const Duration(milliseconds: 50),
+        threshold: const Duration(milliseconds: 100),
+        now: () => wallClock,
+        elapsed: () => monotonic,
+      )..start();
+
+      Future<void> healthyTicks(int count) async {
+        for (var i = 0; i < count; i++) {
+          advance(const Duration(milliseconds: 50));
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+      }
+
+      await healthyTicks(3);
+      // Positive control: a real 300 ms stall while resumed is recorded.
+      advance(const Duration(milliseconds: 350));
+      await tester.pump(const Duration(milliseconds: 50));
+      await healthyTicks(3);
+
+      // App goes to background and the process is frozen for 30 minutes; the
+      // timer may still get a late tick when the process thaws.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      advance(const Duration(minutes: 30));
+      await tester.pump(const Duration(milliseconds: 50));
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await healthyTicks(3);
+
+      observer.dispose();
+      await Otel.forceFlush();
+
+      final stallLogs = logExporter.logs
+          .where((log) => log.body == 'flutter.ui_stall')
+          .toList();
+      expect(stallLogs, hasLength(1));
+      expect(stallLogs.single.attributes['flutter.ui_stall.delay_ms'], 300.0);
+    },
+  );
+
+  testWidgets(
+    'ui stall poller ignores wall-clock jumps (measures on the monotonic clock)',
+    (tester) async {
+      var wallClock = DateTime.utc(2026, 3, 20, 12, 0, 0);
+      var monotonic = Duration.zero;
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final observer = OtelFlutterUiStallObserver(
+        checkInterval: const Duration(milliseconds: 50),
+        threshold: const Duration(milliseconds: 100),
+        now: () => wallClock,
+        elapsed: () => monotonic,
+      )..start();
+      expect(observer.isPolling, isTrue);
+
+      Future<void> healthyTick() async {
+        monotonic += const Duration(milliseconds: 50);
+        wallClock = wallClock.add(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+
+      List<LogRecord> stallLogs() => logExporter.logs
+          .where((log) => log.body == 'flutter.ui_stall')
+          .toList();
+
+      await healthyTick();
+      // Wall clock jumps forward 30 min (NTP / user change) while the UI
+      // thread stays healthy: the monotonic clock only moves one interval.
+      wallClock = wallClock.add(const Duration(minutes: 30));
+      await healthyTick();
+      // ...and back again.
+      wallClock = wallClock.subtract(const Duration(minutes: 30));
+      await healthyTick();
+      await healthyTick();
+      await Otel.forceFlush();
+      expect(stallLogs(), isEmpty, reason: 'a wall-clock jump is not a stall');
+
+      // Positive control: a real 300 ms stall on the monotonic clock only.
+      monotonic += const Duration(milliseconds: 350);
+      await tester.pump(const Duration(milliseconds: 50));
+      await Otel.forceFlush();
+      expect(stallLogs(), hasLength(1));
+      expect(stallLogs().single.attributes['flutter.ui_stall.delay_ms'], 300.0);
+
+      observer.dispose();
+    },
+  );
+
+  testWidgets('ui stall timer never starts without a resumed lifecycle', (
+    tester,
+  ) async {
+    // Headless isolates (e.g. WorkManager) never report a lifecycle state.
+    expect(tester.binding.lifecycleState, isNull);
+    final observer = OtelFlutterUiStallObserver(elapsed: () => Duration.zero)
+      ..start();
+    expect(observer.isPolling, isFalse);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    expect(observer.isPolling, isTrue);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    expect(observer.isPolling, isFalse);
+
+    observer.dispose();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    expect(observer.isPolling, isFalse);
+  });
+
+  test('install is idempotent: a second call never duplicates hooks', () async {
+    const config = ComonOtelFlutterConfig(
+      observeAppLifecycle: false,
+      trackNavigatorRoutes: false,
+      markFirstFrame: false,
+    );
+    final first = ComonOtelFlutter.install(config: config);
+    final second = ComonOtelFlutter.install(config: config);
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+
+    expect(identical(first, second), isTrue);
+
+    FlutterError.onError?.call(
+      FlutterErrorDetails(
+        exception: StateError('once'),
+        stack: StackTrace.current,
+      ),
+    );
+    await Otel.forceFlush();
+    expect(
+      spanExporter.spans.where((span) => span.name == 'flutter.error'),
+      hasLength(1),
+    );
+
+    second.dispose();
+    first.dispose(); // A repeated dispose is a no-op.
+    expect(FlutterError.onError, same(FlutterError.presentError));
+  });
+
+  test(
+    'install against a new Otel instance replaces the stale installation',
+    () async {
+      const config = ComonOtelFlutterConfig(
+        observeAppLifecycle: false,
+        trackNavigatorRoutes: false,
+        markFirstFrame: false,
+      );
+      final stale = ComonOtelFlutter.install(config: config);
+      addTearDown(stale.dispose);
+
+      final exporter = InMemorySpanExporter();
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'reinit',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
+        metricReaders: const <MetricReader>[],
+        logProcessors: const <LogProcessor>[],
+      );
+      final fresh = ComonOtelFlutter.install(config: config);
+      addTearDown(fresh.dispose);
+      expect(identical(stale, fresh), isFalse);
+
+      FlutterError.onError?.call(
+        FlutterErrorDetails(
+          exception: StateError('once'),
+          stack: StackTrace.current,
+        ),
+      );
+      await Otel.forceFlush();
+      expect(
+        exporter.spans.where((span) => span.name == 'flutter.error'),
+        hasLength(1),
+      );
+
+      // Disposing the stale handle late must not clobber the live hooks.
+      stale.dispose();
+      expect(FlutterError.onError, isNot(same(FlutterError.presentError)));
+      fresh.dispose();
+      expect(FlutterError.onError, same(FlutterError.presentError));
+    },
+  );
+
   test('flutter framework errors are recorded as telemetry', () async {
     final instrumentation = ComonOtelFlutter.install(
       config: const ComonOtelFlutterConfig(observeAppLifecycle: false),
@@ -1108,6 +1510,94 @@ void main() {
       expect(errorLog.attributes['flutter.route.name'], '/details');
 
       observer.dispose();
+    },
+  );
+
+  test(
+    'a failure inside error telemetry never skips the fallback or its verdict',
+    () async {
+      OtelFlutterErrorHooks.configure(
+        frameworkErrorListener: (_) => throw StateError('listener boom'),
+        platformErrorListener: (_) => throw StateError('listener boom'),
+      );
+      var frameworkFallbackCalls = 0;
+      var platformFallbackCalls = 0;
+
+      expect(
+        () => recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: _ToStringThrows(),
+            stack: StackTrace.current,
+            informationCollector: () => throw StateError('collector boom'),
+          ),
+          fallback: (_) => frameworkFallbackCalls += 1,
+        ),
+        returnsNormally,
+      );
+      expect(frameworkFallbackCalls, 1);
+
+      late bool handled;
+      expect(
+        () => handled = recordFlutterPlatformError(
+          _ToStringThrows(),
+          StackTrace.current,
+          fallback: (error, stackTrace) {
+            platformFallbackCalls += 1;
+            return true;
+          },
+        ),
+        returnsNormally,
+      );
+      expect(platformFallbackCalls, 1);
+      expect(handled, isTrue);
+
+      // Same guarantee with the hooks healthy but the attribute building
+      // (exception.toString) failing.
+      OtelFlutterErrorHooks.clear();
+      expect(
+        recordFlutterPlatformError(
+          _ToStringThrows(),
+          StackTrace.current,
+          fallback: (error, stackTrace) {
+            platformFallbackCalls += 1;
+            return true;
+          },
+        ),
+        isTrue,
+      );
+      expect(platformFallbackCalls, 2);
+    },
+  );
+
+  test(
+    'platform error handled flag reflects only the fallback, never Otel state',
+    () async {
+      expect(Otel.isInitialized, isTrue);
+
+      expect(
+        recordFlutterPlatformError(
+          StateError('no fallback'),
+          StackTrace.current,
+        ),
+        isFalse,
+        reason: 'without a fallback the engine must keep its default handling',
+      );
+      expect(
+        recordFlutterPlatformError(
+          StateError('unhandled by fallback'),
+          StackTrace.current,
+          fallback: (error, stackTrace) => false,
+        ),
+        isFalse,
+      );
+      expect(
+        recordFlutterPlatformError(
+          StateError('handled by fallback'),
+          StackTrace.current,
+          fallback: (error, stackTrace) => true,
+        ),
+        isTrue,
+      );
     },
   );
 
@@ -1392,4 +1882,9 @@ void main() {
       values.manufacturer,
     ], isNot(contains(piiDeviceName)));
   });
+}
+
+final class _ToStringThrows {
+  @override
+  String toString() => throw StateError('toString boom');
 }

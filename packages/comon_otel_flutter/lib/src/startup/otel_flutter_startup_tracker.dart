@@ -252,7 +252,8 @@ final class OtelFlutterStartupTracker {
     }
   }
 
-  /// Completes the startup span and emits the first-frame log.
+  /// Completes the startup span; when tracking the first frame, also emits
+  /// the first-frame event and the `app.first_frame` log.
   Future<void> completeStartup() async {
     if (_startupCompleted) {
       return;
@@ -265,7 +266,10 @@ final class OtelFlutterStartupTracker {
     _startupSpan.setAttribute('flutter.startup.completed', true);
     await _startupSpan.end();
 
-    if (Otel.isInitialized) {
+    // Only a tracker closed by the first frame may claim a first-frame
+    // marker; with markFirstFrame:false the host closes startup at an
+    // arbitrary later point, which is not a first frame.
+    if (_markFirstFrame && Otel.isInitialized) {
       Otel.instance.loggerProvider
           .getLogger(loggerName)
           .info(
