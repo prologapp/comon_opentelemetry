@@ -79,9 +79,12 @@ final class BatchLogProcessor implements LogProcessor {
   Future<void> _pendingFlush = Future<void>.value();
   int _queuedFlushes = 0;
   bool _sizeFlushScheduled = false;
+  Future<void>? _queuedDrain;
 
   /// Number of flush cycles queued or running. Test-only: lets tests assert
-  /// that the flush chain stays bounded while an export is slow.
+  /// that the flush chain stays bounded while an export is slow. With an
+  /// export stuck, forceFlush/shutdown contribute at most two (one running,
+  /// one queued); a size-triggered cycle can add one more.
   @visibleForTesting
   int get queuedFlushCount => _queuedFlushes;
 
@@ -115,8 +118,13 @@ final class BatchLogProcessor implements LogProcessor {
   /// Flushes queued records and then flushes the exporter.
   ///
   /// Espera no máximo [flushWaitLimit]; ver o campo.
+  ///
+  /// Chamadas concorrentes compartilham o ciclo de drenagem que ainda não
+  /// começou: com um export travado, N chamadas deixam no máximo um ciclo
+  /// rodando e um na fila, não N. O da fila exporta o que chegou depois do
+  /// início do ciclo em andamento.
   Future<void> forceFlush() => _waitBounded(() async {
-    await _flushBatch(all: true);
+    await _drainAll();
     try {
       await _exporter.forceFlush();
     } catch (_) {
@@ -136,7 +144,7 @@ final class BatchLogProcessor implements LogProcessor {
     _isShutdown = true;
     _timer?.cancel();
     await _waitBounded(() async {
-      await _flushBatch(all: true);
+      await _drainAll();
       try {
         await _exporter.shutdown();
       } catch (_) {
@@ -156,6 +164,12 @@ final class BatchLogProcessor implements LogProcessor {
     }
   }
 
+  /// Returns the drain-all cycle that is queued and not yet started,
+  /// queueing one if there is none. A cycle that already started may have
+  /// passed its last queue check, so items emitted after it started get the
+  /// next one.
+  Future<void> _drainAll() => _queuedDrain ??= _flushBatch(all: true);
+
   /// Queues one flush cycle on the chain. Every export carries at most
   /// [maxBatchSize] items. A timer cycle exports one batch; a
   /// size-triggered cycle drains while a full batch is queued; [all]
@@ -163,6 +177,10 @@ final class BatchLogProcessor implements LogProcessor {
   Future<void> _flushBatch({bool all = false, bool sizeTriggered = false}) {
     _queuedFlushes += 1;
     _pendingFlush = _pendingFlush.then((_) async {
+      if (all) {
+        // Started: callers arriving from now on queue the next drain.
+        _queuedDrain = null;
+      }
       try {
         while (_queue.isNotEmpty) {
           final batch = <LogRecord>[];

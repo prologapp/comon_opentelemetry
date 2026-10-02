@@ -432,6 +432,62 @@ void defineBatchProcessorHealthTests() {
       gated.gate.complete();
     });
 
+    // Cada forceFlush com o exporter travado enfileirava um ciclo `all` novo.
+    // Agora os chamadores compartilham o ciclo ainda não iniciado: no máximo
+    // um rodando e um na fila (o que leva o dado que chegou depois do início).
+    test('concurrent span forceFlush calls share one queued drain', () async {
+      final gated = _GatedSpanExporter();
+      final processor = BatchSpanProcessor(
+        exporter: gated,
+        maxBatchSize: 4,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: const Duration(milliseconds: 20),
+      );
+      final tracer = spanTracer(processor);
+      await tracer.startSpan('first').end();
+      await processor.forceFlush().timeout(outer);
+      expect(gated.batchSizes, <int>[1]);
+
+      // Arrives after the stuck drain started.
+      await tracer.startSpan('late').end();
+      await Future.wait(
+        List<Future<void>>.generate(10, (_) => processor.forceFlush()),
+      ).timeout(outer);
+      expect(processor.queuedFlushCount, lessThanOrEqualTo(2));
+
+      gated.gate.complete();
+      await _waitFor(() => processor.queuedFlushCount == 0);
+      expect(gated.batchSizes.fold<int>(0, (a, b) => a + b), 2);
+      expect(processor.queueLength, 0);
+      await processor.shutdown();
+    });
+
+    test('concurrent log forceFlush calls share one queued drain', () async {
+      final gated = _GatedLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: gated,
+        maxBatchSize: 4,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: const Duration(milliseconds: 20),
+      );
+      final logger = logLogger(processor);
+      logger.info('first');
+      await processor.forceFlush().timeout(outer);
+      expect(gated.batchSizes, <int>[1]);
+
+      logger.info('late');
+      await Future.wait(
+        List<Future<void>>.generate(10, (_) => processor.forceFlush()),
+      ).timeout(outer);
+      expect(processor.queuedFlushCount, lessThanOrEqualTo(2));
+
+      gated.gate.complete();
+      await _waitFor(() => processor.queuedFlushCount == 0);
+      expect(gated.batchSizes.fold<int>(0, (a, b) => a + b), 2);
+      expect(processor.queueLength, 0);
+      await processor.shutdown();
+    });
+
     test('a forceFlush that stopped waiting still exports the rest', () async {
       final gated = _GatedSpanExporter();
       final processor = BatchSpanProcessor(
