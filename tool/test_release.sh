@@ -299,6 +299,26 @@ RELEASE_GATES_CMD="" HOME="$T/home" GATE_STUB_FAIL="packages/leaf analyze ." \
 RELEASE_GATES_CMD="" HOME="$T/emptyhome" \
   expect_fail "recusa sem o SDK pinado instalado" "3.38.9/bin/dart não existe; rode 'fvm install 3.38.9'" prepare 0.1.0 --dry-run
 
+echo "== --with-integration só quando a integração roda de fato"
+# Custom gates or skipped gates never run the integration tests, so the PR
+# body must not be able to claim them.
+expect_fail "recusa --with-integration com RELEASE_GATES_CMD" "--with-integration não combina com RELEASE_GATES_CMD" prepare 0.1.0 --dry-run --with-integration
+expect_ok "controle: RELEASE_GATES_CMD sem --with-integration passa" prepare 0.1.0 --dry-run
+RELEASE_GATES_CMD="" expect_fail "recusa --with-integration com --skip-gates" "--with-integration não combina com --skip-gates" prepare 0.1.0 --dry-run --skip-gates --with-integration
+printf '#!/usr/bin/env bash\nexit 0\n' >"$T/bin/docker"
+chmod +x "$T/bin/docker"
+RELEASE_GATES_CMD="" HOME="$T/home" PATH="$T/bin:$PATH" \
+  expect_fail "recusa --with-integration sem nenhum teste de integração" "nenhum pacote tem teste com a tag 'integration'" prepare 0.1.0 --dry-run --with-integration
+commit_file packages/core/test/collector_test.dart "@Tags(['integration'])" "test(core): collector integration"
+g push -q origin dev
+: >"$STUB/sdk_calls.log"
+RELEASE_GATES_CMD="" HOME="$T/home" PATH="$T/bin:$PATH" \
+  expect_ok "controle: com teste de integração e Docker passa" prepare 0.1.0 --dry-run --with-integration
+sdk_called "integração roda no pacote que a tem" "dart $WP/packages/core test --tags integration"
+if grep -qF -- "packages/leaf test --tags integration" "$STUB/sdk_calls.log"; then ko "integração rodou em pacote sem teste de integração"; else ok "integração não roda em pacote sem ela"; fi
+g revert --no-edit HEAD >/dev/null
+g push -q origin dev
+
 echo "== pin-snippet antes da tag"
 expect_fail "pin-snippet recusa sem tag" "a tag v0.1.0 não existe" pin-snippet 0.1.0
 expect_fail "pin-snippet valida semver" "inválida" pin-snippet 0.1

@@ -118,13 +118,18 @@ O `prepare` recusa, com mensagem específica, quando:
 - os três pubspecs têm versões diferentes, ou há literal de versão em `lib/` diferente
   da versão dos pubspecs (ver [Versão no código](#versão-no-código));
 - existe tag `v*` que não está contida na `dev`, ou seja, back-merge pendente;
+- `--with-integration` vem com `--skip-gates` ou `RELEASE_GATES_CMD`, ou nenhum pacote
+  tem teste de integração;
 - um gate falha.
 
 Depois de passar, o `prepare`:
 
 1. Roda os gates no `HEAD`: `pub get` do workspace, `analyze` dos 3 pacotes, testes
    unitários dos 3 pacotes (`dart test --exclude-tags integration` nos de Dart puro,
-   `flutter test` no Flutter). Com `--with-integration`, roda também `dart test --tags integration`.
+   `flutter test` no Flutter). Com `--with-integration`, roda também `dart test --tags integration`
+   nos pacotes que têm teste com essa tag. Se nenhum tiver, o `prepare` aborta em vez de
+   anunciar integração que não rodou. `--with-integration` é recusado junto com
+   `--skip-gates` ou `RELEASE_GATES_CMD`, porque nesses casos a integração não roda.
 2. Gera a seção do CHANGELOG a partir dos commits convencionais desde a última tag
    `v*`. Na primeira release, a base é o ponto de fork do upstream, `fbf61da`; `--since` sobrescreve.
    Os commits são agrupados por tipo. Commits trazidos por merge de PR ganham o link do

@@ -17,6 +17,7 @@
 #   --hotfix             prepare: release from the current hotfix/vX.Y.Z branch
 #                        (cut from origin/main) instead of origin/dev
 #   --with-integration   prepare: also run the Docker-backed integration tests
+#                        (refused with --skip-gates or RELEASE_GATES_CMD)
 #   --skip-gates         prepare --dry-run only: skip analyze/test (loudly)
 #   --since <ref>        prepare: CHANGELOG base override
 #   --ticket <PL-XXXX>   prepare/back-merge: PR title prefix and commit footer
@@ -287,11 +288,16 @@ run_gates() {
   done
   if [ "$WITH_INTEGRATION" -eq 1 ]; then
     command -v docker >/dev/null 2>&1 || die "--with-integration exige Docker"
+    local n_integration=0
     for pkg in $(packages_at HEAD); do
       if [ -d "$pkg/test" ] && grep -rqF "'integration'" "$pkg/test"; then
         run_gate "test $pkg (integração, Docker)" "$pkg" "$dart" test --tags integration
+        n_integration=$((n_integration + 1))
       fi
     done
+    # comon_otel has integration tests: zero means the search is broken, and
+    # the PR body would claim integration that never ran.
+    [ "$n_integration" -gt 0 ] || die "--with-integration pedido, mas nenhum pacote tem teste com a tag 'integration'; nada de integração rodou"
   else
     echo "  integração com Docker: não rodada (use --with-integration; 'collector starts late' é flaky conhecido)"
   fi
@@ -819,6 +825,12 @@ main() {
   done
   if [ "$SKIP_GATES" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
     die "--skip-gates só é aceito com --dry-run"
+  fi
+  # Integration only runs on the real gates path; anything else would let the
+  # PR body announce Docker integration that never ran.
+  if [ "$WITH_INTEGRATION" -eq 1 ]; then
+    [ "$SKIP_GATES" -eq 0 ] || die "--with-integration não combina com --skip-gates: nenhum gate roda"
+    [ -z "${RELEASE_GATES_CMD:-}" ] || die "--with-integration não combina com RELEASE_GATES_CMD: os gates customizados substituem os testes de integração"
   fi
   command -v git >/dev/null || die "git não encontrado"
   command -v jq >/dev/null || die "jq não encontrado"
