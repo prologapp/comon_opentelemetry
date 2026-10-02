@@ -48,7 +48,7 @@ melos run format
 Validate publishability without uploading:
 
 ```bash
-melos run publish
+melos run publish:dry-run
 ```
 
 Generate package documentation:
