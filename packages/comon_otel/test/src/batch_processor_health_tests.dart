@@ -57,6 +57,11 @@ final class _StuckTeardownSpanExporter implements SpanExporter {
   final Completer<void> shutdownGate = Completer<void>();
   int exported = 0;
 
+  /// Chamadas recebidas: o prazo estourado sozinho não prova que o
+  /// processador chegou a chamar o teardown do exporter.
+  int forceFlushCalls = 0;
+  int shutdownCalls = 0;
+
   @override
   Future<ExportResult> export(List<SpanData> spans) async {
     exported += spans.length;
@@ -64,10 +69,16 @@ final class _StuckTeardownSpanExporter implements SpanExporter {
   }
 
   @override
-  Future<void> forceFlush() => forceFlushGate.future;
+  Future<void> forceFlush() {
+    forceFlushCalls += 1;
+    return forceFlushGate.future;
+  }
 
   @override
-  Future<void> shutdown() => shutdownGate.future;
+  Future<void> shutdown() {
+    shutdownCalls += 1;
+    return shutdownGate.future;
+  }
 }
 
 /// Log counterpart of [_StuckTeardownSpanExporter].
@@ -76,6 +87,10 @@ final class _StuckTeardownLogExporter implements LogExporter {
   final Completer<void> shutdownGate = Completer<void>();
   int exported = 0;
 
+  /// Ver [_StuckTeardownSpanExporter.forceFlushCalls].
+  int forceFlushCalls = 0;
+  int shutdownCalls = 0;
+
   @override
   Future<ExportResult> export(List<LogRecord> logs) async {
     exported += logs.length;
@@ -83,10 +98,16 @@ final class _StuckTeardownLogExporter implements LogExporter {
   }
 
   @override
-  Future<void> forceFlush() => forceFlushGate.future;
+  Future<void> forceFlush() {
+    forceFlushCalls += 1;
+    return forceFlushGate.future;
+  }
 
   @override
-  Future<void> shutdown() => shutdownGate.future;
+  Future<void> shutdown() {
+    shutdownCalls += 1;
+    return shutdownGate.future;
+  }
 }
 
 void defineBatchProcessorHealthTests() {
@@ -551,6 +572,7 @@ void defineBatchProcessorHealthTests() {
 
       expectNearLimit(stopwatch.elapsed);
       expect(stuck.exported, 1);
+      expect(stuck.forceFlushCalls, 1);
       stuck.forceFlushGate.complete();
       stuck.shutdownGate.complete();
       await processor.shutdown();
@@ -572,6 +594,7 @@ void defineBatchProcessorHealthTests() {
 
       expectNearLimit(stopwatch.elapsed);
       expect(stuck.exported, 1);
+      expect(stuck.shutdownCalls, 1);
       stuck.shutdownGate.complete();
     });
 
@@ -591,6 +614,7 @@ void defineBatchProcessorHealthTests() {
 
       expectNearLimit(stopwatch.elapsed);
       expect(stuck.exported, 1);
+      expect(stuck.forceFlushCalls, 1);
       stuck.forceFlushGate.complete();
       stuck.shutdownGate.complete();
       await processor.shutdown();
@@ -612,6 +636,7 @@ void defineBatchProcessorHealthTests() {
 
       expectNearLimit(stopwatch.elapsed);
       expect(stuck.exported, 1);
+      expect(stuck.shutdownCalls, 1);
       stuck.shutdownGate.complete();
     });
 
