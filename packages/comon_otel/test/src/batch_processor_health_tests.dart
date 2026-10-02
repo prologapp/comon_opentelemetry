@@ -50,6 +50,45 @@ final class _GatedLogExporter implements LogExporter {
   }
 }
 
+/// Exporter whose export ends at once but whose forceFlush and shutdown hang
+/// until their own gate opens: the teardown half of the flush budget.
+final class _StuckTeardownSpanExporter implements SpanExporter {
+  final Completer<void> forceFlushGate = Completer<void>();
+  final Completer<void> shutdownGate = Completer<void>();
+  int exported = 0;
+
+  @override
+  Future<ExportResult> export(List<SpanData> spans) async {
+    exported += spans.length;
+    return ExportResult.success;
+  }
+
+  @override
+  Future<void> forceFlush() => forceFlushGate.future;
+
+  @override
+  Future<void> shutdown() => shutdownGate.future;
+}
+
+/// Log counterpart of [_StuckTeardownSpanExporter].
+final class _StuckTeardownLogExporter implements LogExporter {
+  final Completer<void> forceFlushGate = Completer<void>();
+  final Completer<void> shutdownGate = Completer<void>();
+  int exported = 0;
+
+  @override
+  Future<ExportResult> export(List<LogRecord> logs) async {
+    exported += logs.length;
+    return ExportResult.success;
+  }
+
+  @override
+  Future<void> forceFlush() => forceFlushGate.future;
+
+  @override
+  Future<void> shutdown() => shutdownGate.future;
+}
+
 void defineBatchProcessorHealthTests() {
   group('batch processor health hooks', () {
     test('queueLength reports queued spans below the cap', () async {
@@ -486,6 +525,88 @@ void defineBatchProcessorHealthTests() {
       expect(gated.batchSizes.fold<int>(0, (a, b) => a + b), 2);
       expect(processor.queueLength, 0);
       await processor.shutdown();
+    });
+
+    // O prazo cobre também o forceFlush/shutdown do próprio exporter, não só
+    // os exports: aqui o export termina na hora e o teardown trava.
+    test('span forceFlush returns near the limit when the exporter forceFlush '
+        'hangs', () async {
+      final stuck = _StuckTeardownSpanExporter();
+      final processor = BatchSpanProcessor(
+        exporter: stuck,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      await spanTracer(processor).startSpan('teardown').end();
+
+      final stopwatch = Stopwatch()..start();
+      await processor.forceFlush().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      expect(stuck.exported, 1);
+      stuck.forceFlushGate.complete();
+      stuck.shutdownGate.complete();
+      await processor.shutdown();
+    });
+
+    test('span shutdown returns near the limit when the exporter shutdown '
+        'hangs', () async {
+      final stuck = _StuckTeardownSpanExporter();
+      final processor = BatchSpanProcessor(
+        exporter: stuck,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      await spanTracer(processor).startSpan('teardown').end();
+
+      final stopwatch = Stopwatch()..start();
+      await processor.shutdown().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      expect(stuck.exported, 1);
+      stuck.shutdownGate.complete();
+    });
+
+    test('log forceFlush returns near the limit when the exporter forceFlush '
+        'hangs', () async {
+      final stuck = _StuckTeardownLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: stuck,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      logLogger(processor).info('teardown');
+
+      final stopwatch = Stopwatch()..start();
+      await processor.forceFlush().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      expect(stuck.exported, 1);
+      stuck.forceFlushGate.complete();
+      stuck.shutdownGate.complete();
+      await processor.shutdown();
+    });
+
+    test('log shutdown returns near the limit when the exporter shutdown '
+        'hangs', () async {
+      final stuck = _StuckTeardownLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: stuck,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      logLogger(processor).info('teardown');
+
+      final stopwatch = Stopwatch()..start();
+      await processor.shutdown().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      expect(stuck.exported, 1);
+      stuck.shutdownGate.complete();
     });
 
     test('a forceFlush that stopped waiting still exports the rest', () async {
