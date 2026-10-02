@@ -1830,6 +1830,66 @@ void main() {
       expect(platformFallbackCalls, 8);
     });
 
+    test('two groups of the same source have independent quotas', () async {
+      for (var i = 0; i < 8; i++) {
+        for (final exception in <Object>[StateError('a'), ArgumentError('b')]) {
+          recordFlutterFrameworkError(
+            FlutterErrorDetails(
+              exception: exception,
+              stack: StackTrace.current,
+            ),
+            fallback: (_) {},
+          );
+        }
+      }
+      await Otel.forceFlush();
+
+      final groups = spansNamed(
+        'flutter.error',
+      ).map((span) => span.attributes['error.group.name']).toList();
+      expect(groups, hasLength(10));
+      expect(
+        groups.where((group) => group == 'framework:StateError'),
+        hasLength(5),
+      );
+      expect(
+        groups.where((group) => group == 'framework:ArgumentError'),
+        hasLength(5),
+      );
+      expect(
+        metricExporter
+            .lastMetricNamed('flutter.error.suppressed.count')!
+            .points
+            .single
+            .value,
+        6,
+      );
+    });
+
+    test('a null limit exports every occurrence', () async {
+      OtelFlutterErrorRateLimiter.configure(
+        maxPerMinute: null,
+        now: () => fakeNow,
+      );
+      for (var i = 0; i < 12; i++) {
+        recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: StateError('unlimited'),
+            stack: StackTrace.current,
+          ),
+          fallback: (_) {},
+        );
+      }
+      await Otel.forceFlush();
+
+      expect(spansNamed('flutter.error'), hasLength(12));
+      expect(logsWithBody('flutter.framework_error'), hasLength(12));
+      expect(
+        metricExporter.lastMetricNamed('flutter.error.suppressed.count'),
+        isNull,
+      );
+    });
+
     test('the quota renews after one minute', () async {
       void fire() => recordFlutterFrameworkError(
         FlutterErrorDetails(
