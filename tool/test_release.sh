@@ -288,6 +288,44 @@ echo "$MERGE" >"$STUB/merged_commit"
 
 echo "== tag"
 expect_fail "tag recusa commit da main sem a versão" "tem a versão 0.0.1-alpha.1 nos pubspecs, não 0.1.0" tag 0.1.0 --commit "$PRE_MERGE"
+
+echo "== tag: só o merge commit que trouxe a versão para a main"
+# $REL (bump commit of the branch) is an ancestor of main with the version and
+# the CHANGELOG section: only the merge-commit rule can refuse it.
+expect_fail "tag recusa o commit de bump da branch (--commit)" "não está na linha first-parent" tag 0.1.0 --commit "$REL" --dry-run
+echo "$REL" >"$STUB/merged_commit"
+expect_fail "tag recusa o commit de bump vindo do gh" "não está na linha first-parent" tag 0.1.0 --dry-run
+echo "$MERGE" >"$STUB/merged_commit"
+# Each rule isolated on a side "main" (RELEASE_MAIN_BRANCH) where the other
+# two rules hold for the candidate commit.
+# (a) first-parent only: M_R is a merge that introduces 0.1.0, but it reaches
+#     t-fp through the second parent.
+g switch -q -c t-mr "$REL^1"
+g merge -q --no-ff "$REL" -m "Merge release into side"
+M_R="$(g rev-parse HEAD)"
+g switch -q -c t-fp "$PRE_MERGE"
+g merge -q --no-ff "$M_R" -m "Merge side"
+g push -q origin t-fp
+RELEASE_MAIN_BRANCH=t-fp expect_fail "tag recusa merge fora da linha first-parent" "não está na linha first-parent" tag 0.1.0 --commit "$M_R" --dry-run
+RELEASE_MAIN_BRANCH=t-fp expect_ok "controle: merge na linha first-parent da main lateral passa" tag 0.1.0 --commit "$(g rev-parse t-fp)" --dry-run
+# (b) merge only: a main fast-forwarded to $REL has it on the first-parent line
+#     and it introduces 0.1.0, but it is not a merge commit.
+g push -q origin "$REL:refs/heads/t-ff"
+RELEASE_MAIN_BRANCH=t-ff expect_fail "tag recusa commit que não é merge" "não é merge commit" tag 0.1.0 --commit "$REL" --dry-run
+# (c) introduces only: a later merge on main is first-parent and a merge, but
+#     its first parent already has 0.1.0.
+g switch -q -c t-side "$MERGE"
+commit_file side.md "s" "docs: side"
+g switch -q -c t-later "$MERGE"
+g merge -q --no-ff t-side -m "Merge pull request #12 from acme/side"
+LATER="$(g rev-parse HEAD)"
+g push -q origin t-later
+RELEASE_MAIN_BRANCH=t-later expect_fail "tag recusa merge posterior ao da release" "não é o merge que trouxe 0.1.0" tag 0.1.0 --commit "$LATER" --dry-run
+RELEASE_MAIN_BRANCH=t-later expect_ok "controle: o merge da release segue aceito na mesma main" tag 0.1.0 --commit "$MERGE" --dry-run
+g switch -q main
+g branch -q -D t-mr t-fp t-side t-later
+g push -q origin :refs/heads/t-fp :refs/heads/t-ff :refs/heads/t-later
+git -C "$W" fetch -q --prune origin
 snapshot "$T/before"
 expect_ok "tag --dry-run sai 0" tag 0.1.0 --dry-run
 snapshot "$T/after"

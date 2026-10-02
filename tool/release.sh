@@ -662,6 +662,27 @@ find_release_commit() {
   die "nenhum PR mergeado de release/v$version ou hotfix/v$version em $MAIN_BRANCH; passe --commit <sha> se o merge foi por outro caminho"
 }
 
+# The tag goes on the merge commit that brought the release into <main-ref>:
+# on main's own (first-parent) line, a merge, and the first commit of that
+# line with <version> (its first parent has another one). Any other ancestor
+# of main that carries the version (the bump commit of the release branch, a
+# later commit on main) is refused.
+assert_release_merge_commit() {
+  local commit="$1" main_ref="$2" version="$3" short fp="$WORK/first-parent.txt" n_parents parent_v
+  short="$(git rev-parse --short "$commit")"
+  # Via file, not a pipe into grep -q: under pipefail an early-exiting grep
+  # gives rev-list a SIGPIPE on long histories and the check fails at random.
+  git rev-list --first-parent "$main_ref" >"$fp"
+  grep -qxF "$commit" "$fp" \
+    || die "$short não está na linha first-parent de $main_ref (é commit de branch, não o merge na $MAIN_BRANCH); use o merge commit do PR de release"
+  n_parents="$(git rev-list --parents -n1 "$commit" | awk '{print NF-1}')"
+  [ "$n_parents" -ge 2 ] \
+    || die "$short não é merge commit; a tag vai no merge commit do PR de release (merge com \"Create a merge commit\")"
+  parent_v="$(workspace_version_at "$commit^1" 2>/dev/null || true)"
+  [ "$parent_v" != "$version" ] \
+    || die "$short não é o merge que trouxe $version para $main_ref (o primeiro pai já tem $version); use o merge commit do PR de release"
+}
+
 cmd_tag() {
   local version="$1" tag="v$1"
   validate_semver "$version"
@@ -672,19 +693,22 @@ cmd_tag() {
   git cat-file -e "$commit^{commit}" 2>/dev/null || die "commit $commit não está no repo local (fetch?)"
   git merge-base --is-ancestor "$commit" "$main_ref" || die "$commit não está em $main_ref"
 
-  local at
-  at="$(workspace_version_at "$commit")"
-  [ "$at" = "$version" ] || die "$main_ref em $(git rev-parse --short "$commit") tem a versão $at nos pubspecs, não $version"
-  assert_literals_match "$commit" "$version"
-  local notes="$WORK/notes.md"
-  git show "$commit:CHANGELOG.md" 2>/dev/null | extract_changelog_section "$version" >"$notes" || true
-  grep -q . "$notes" || die "CHANGELOG.md em $(git rev-parse --short "$commit") não tem a seção $version"
-
+  # An existing tag is never moved: checked before anything about the commit.
   local lt rt
   lt="$(local_tag_commit "$tag")"
   rt="$(remote_tag_commit "$tag")"
   if [ -n "$lt" ] && [ "$lt" != "$commit" ]; then die "a tag $tag já existe localmente em $lt (esperado $commit); tag nunca é movida"; fi
   if [ -n "$rt" ] && [ "$rt" != "$commit" ]; then die "a tag $tag já existe em $REMOTE em $rt (esperado $commit); tag nunca é movida"; fi
+
+  local at short
+  short="$(git rev-parse --short "$commit")"
+  at="$(workspace_version_at "$commit")"
+  [ "$at" = "$version" ] || die "$main_ref em $short tem a versão $at nos pubspecs, não $version"
+  assert_literals_match "$commit" "$version"
+  local notes="$WORK/notes.md"
+  git show "$commit:CHANGELOG.md" 2>/dev/null | extract_changelog_section "$version" >"$notes" || true
+  grep -q . "$notes" || die "CHANGELOG.md em $short não tem a seção $version"
+  assert_release_merge_commit "$commit" "$main_ref" "$version"
 
   info "release commit: $commit ($main_ref)"
   if [ -n "$lt" ]; then

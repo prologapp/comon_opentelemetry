@@ -154,9 +154,12 @@ por ele que o `tag` acha a seção.
 
 O `tag` encontra o merge commit pelo PR mergeado (`release/vX.Y.Z` ou
 `hotfix/vX.Y.Z`, via `gh`). Se precisar, `--commit <sha>` passa o commit direto. Antes
-de criar a tag, ele confere que o commit está na `origin/main`, que os pubspecs e os
-literais têm a versão e que o CHANGELOG tem a seção. Então cria a tag anotada, faz push
-e cria o GitHub Release com a seção do CHANGELOG (`gh release create --verify-tag`).
+de criar a tag, ele confere que os pubspecs e os literais têm a versão, que o CHANGELOG
+tem a seção e que o commit é o merge que trouxe a versão para a `origin/main`: está na
+linha first-parent da `main`, tem dois pais e o primeiro pai ainda tem outra versão. O
+commit `chore(release)` da branch e qualquer commit posterior da `main` são recusados,
+com `--commit` ou via `gh`. Então cria a tag anotada, faz push e cria o GitHub Release
+com a seção do CHANGELOG (`gh release create --verify-tag`).
 
 Se a tag já existir em outro commit, o `tag` recusa: **tag nunca é movida**. Se já
 existir no commit certo, só completa o que faltar.
@@ -289,6 +292,7 @@ houver admin:
 | `literais de versão em lib/ divergem` | literal novo com versão fixa diferente | alinhar o literal com a versão dos pubspecs num PR para a `dev` |
 | `CHANGELOG perdeu commits` | histórico com forma inesperada (ex.: merge octopus) | investigar o range; `--since` ajusta a base |
 | `tem a versão X nos pubspecs, não Y` (no `tag`) | o PR mergeado não é o de release, ou o merge foi squash | conferir o PR e usar `--commit` com o merge commit certo |
+| `não está na linha first-parent`, `não é merge commit` ou `não é o merge que trouxe` (no `tag`) | o commit passado não é o merge do PR de release na `main` (ex.: o `chore(release)` da branch, ou um commit posterior) | `--commit` com o merge commit do PR de release |
 | gate `test ...` falhou | regressão, ou o flaky de transport | ver o log impresso; se for o flaky conhecido, rodar o teste isolado |
 
 ## Testes do harness
