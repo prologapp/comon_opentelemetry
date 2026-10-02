@@ -196,9 +196,15 @@ final class OtelConfig {
   final OtlpCompression otlpLogsCompression;
 
   /// Optional custom HTTP transport for OTLP HTTP exporters.
+  ///
+  /// Shared by the trace, metric and log exporters and never shut down by
+  /// the SDK (`Otel.shutdown` included): the caller owns it and releases it.
   final OtlpHttpTransport? otlpTransport;
 
   /// Optional custom gRPC transport for OTLP gRPC exporters.
+  ///
+  /// Shared by the trace, metric and log exporters and never shut down by
+  /// the SDK (`Otel.shutdown` included): the caller owns it and releases it.
   final OtlpGrpcTransport? otlpGrpcTransport;
 
   /// Shared OTLP compression fallback used when per-signal values are absent.

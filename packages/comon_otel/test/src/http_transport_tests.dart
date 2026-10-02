@@ -1,5 +1,110 @@
 part of '../comon_otel_test.dart';
 
+final class _ShutdownCountingHttpTransport implements OtlpHttpTransport {
+  int shutdownCalls = 0;
+
+  @override
+  Future<OtlpHttpResponse> postJson(OtlpHttpRequest request) async =>
+      const OtlpHttpResponse(statusCode: 200, body: '');
+
+  @override
+  Future<OtlpHttpResponse> postBytes(OtlpHttpRequest request) async =>
+      const OtlpHttpResponse(statusCode: 200, body: '');
+
+  @override
+  Future<void> shutdown() async {
+    shutdownCalls += 1;
+  }
+}
+
+final class _ShutdownCountingGrpcTransport implements OtlpGrpcTransport {
+  int shutdownCalls = 0;
+
+  @override
+  Future<List<int>> export(OtlpGrpcRequest request) async => const <int>[];
+
+  @override
+  Future<void> shutdown() async {
+    shutdownCalls += 1;
+  }
+}
+
+/// One exporter reduced to an empty export and its shutdown.
+typedef _ExporterUnderTest = ({
+  String name,
+  Future<ExportResult> Function() export,
+  Future<void> Function() shutdown,
+});
+
+List<_ExporterUnderTest> _httpExporters(
+  String endpoint, {
+  OtlpHttpTransport? transport,
+}) {
+  const once = OtlpRetryConfig(maxAttempts: 1);
+  final jsonSpan = OtlpHttpJsonSpanExporter(
+    endpoint: endpoint,
+    transport: transport,
+    retry: once,
+  );
+  final jsonLog = OtlpHttpJsonLogExporter(
+    endpoint: endpoint,
+    transport: transport,
+    retry: once,
+  );
+  final jsonMetric = OtlpHttpJsonMetricExporter(
+    endpoint: endpoint,
+    transport: transport,
+    retry: once,
+  );
+  final protoSpan = OtlpHttpProtobufSpanExporter(
+    endpoint: endpoint,
+    transport: transport,
+    retry: once,
+  );
+  final protoLog = OtlpHttpProtobufLogExporter(
+    endpoint: endpoint,
+    transport: transport,
+    retry: once,
+  );
+  final protoMetric = OtlpHttpProtobufMetricExporter(
+    endpoint: endpoint,
+    transport: transport,
+    retry: once,
+  );
+  return <_ExporterUnderTest>[
+    (
+      name: 'json span',
+      export: () => jsonSpan.export(const <SpanData>[]),
+      shutdown: jsonSpan.shutdown,
+    ),
+    (
+      name: 'json log',
+      export: () => jsonLog.export(const <LogRecord>[]),
+      shutdown: jsonLog.shutdown,
+    ),
+    (
+      name: 'json metric',
+      export: () => jsonMetric.export(const <MetricData>[]),
+      shutdown: jsonMetric.shutdown,
+    ),
+    (
+      name: 'protobuf span',
+      export: () => protoSpan.export(const <SpanData>[]),
+      shutdown: protoSpan.shutdown,
+    ),
+    (
+      name: 'protobuf log',
+      export: () => protoLog.export(const <LogRecord>[]),
+      shutdown: protoLog.shutdown,
+    ),
+    (
+      name: 'protobuf metric',
+      export: () => protoMetric.export(const <MetricData>[]),
+      shutdown: protoMetric.shutdown,
+    ),
+  ];
+}
+
 void defineHttpTransportTests() {
   group('http transport', () {
     test('default transport sends request body and reads response', () async {
@@ -163,6 +268,94 @@ void defineHttpTransportTests() {
         stopwatch.elapsed,
         lessThan(timeout + const Duration(milliseconds: 150)),
       );
+    });
+  });
+
+  // Quem injeta o transporte é dono dele. Antes, todo exporter fechava o
+  // transporte no shutdown: o `otlpTransport` do Otel.init, compartilhado
+  // pelos três sinais, era fechado pelo shutdown de traces antes do export
+  // final de métricas e logs, e um shutdown tardio de uma instância antiga
+  // fechava o transporte reutilizado pela nova.
+  group('exporter transport ownership', () {
+    test(
+      'an injected HTTP transport is never shut down by the exporter',
+      () async {
+        final transport = _ShutdownCountingHttpTransport();
+        for (final exporter in _httpExporters(
+          'http://127.0.0.1:4318',
+          transport: transport,
+        )) {
+          await exporter.shutdown();
+        }
+
+        expect(transport.shutdownCalls, 0);
+      },
+    );
+
+    test(
+      'an injected gRPC transport is never shut down by the exporter',
+      () async {
+        final transport = _ShutdownCountingGrpcTransport();
+        const endpoint = 'http://127.0.0.1:4317';
+        await OtlpGrpcSpanExporter(
+          endpoint: endpoint,
+          transport: transport,
+        ).shutdown();
+        await OtlpGrpcLogExporter(
+          endpoint: endpoint,
+          transport: transport,
+        ).shutdown();
+        await OtlpGrpcMetricExporter(
+          endpoint: endpoint,
+          transport: transport,
+        ).shutdown();
+
+        expect(transport.shutdownCalls, 0);
+      },
+    );
+
+    test(
+      'Otel.shutdown leaves the otlpTransport given to Otel.init open',
+      () async {
+        await Otel.shutdown();
+        final transport = _ShutdownCountingHttpTransport();
+        await Otel.init(
+          serviceName: 'transport-ownership',
+          exporter: OtelExporter.otlpHttpJson,
+          endpoint: 'http://127.0.0.1:4318',
+          otlpTransport: transport,
+        );
+        await Otel.shutdown();
+
+        expect(transport.shutdownCalls, 0);
+      },
+    );
+
+    test('a transport the exporter created is shut down with it', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        await request.drain<void>();
+        request.response.statusCode = 200;
+        await request.response.close();
+      });
+
+      for (final exporter in _httpExporters(
+        'http://127.0.0.1:${server.port}',
+      )) {
+        expect(
+          await exporter.export(),
+          ExportResult.success,
+          reason: exporter.name,
+        );
+        await exporter.shutdown();
+        // The server is still up: only a closed client fails here.
+        expect(
+          await exporter.export(),
+          ExportResult.failure,
+          reason: exporter.name,
+        );
+      }
     });
   });
 }

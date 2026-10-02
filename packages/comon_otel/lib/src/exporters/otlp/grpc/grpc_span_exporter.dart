@@ -21,6 +21,7 @@ final class OtlpGrpcSpanExporter implements SpanExporter {
        _headers = buildOtlpGrpcHeaders(headers),
        _timeout = timeout,
        _transport = transport ?? IoOtlpGrpcTransport(),
+       _ownsTransport = transport == null,
        _compression = compression,
        _retry = retry;
 
@@ -28,6 +29,11 @@ final class OtlpGrpcSpanExporter implements SpanExporter {
   final Map<String, String> _headers;
   final Duration _timeout;
   final OtlpGrpcTransport _transport;
+
+  /// Whether this exporter created [_transport] and so must release it. An
+  /// injected transport belongs to whoever injected it: it may be shared
+  /// with other exporters or a later SDK instance.
+  final bool _ownsTransport;
   final OtlpCompression _compression;
   final OtlpRetryConfig _retry;
 
@@ -55,6 +61,12 @@ final class OtlpGrpcSpanExporter implements SpanExporter {
   @override
   Future<void> forceFlush() async {}
 
+  /// Releases the transport only when this exporter created it; an injected
+  /// `transport` is left open for its owner to shut down.
   @override
-  Future<void> shutdown() => _transport.shutdown();
+  Future<void> shutdown() async {
+    if (_ownsTransport) {
+      await _transport.shutdown();
+    }
+  }
 }
