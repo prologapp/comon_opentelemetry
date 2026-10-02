@@ -340,16 +340,19 @@ g push -q origin dev
 expect_ok "back-merge reconhece dev já contendo" back-merge 0.1.0
 expect_out "diz que dev já contém" "já contém v0.1.0"
 commit_file packages/core/lib/src/next.dart "const n = 1;" "feat(core): next thing"
+commit_file tool/x.sh "echo" "chore(release): tweak the harness"
 g push -q origin dev
 expect_ok "controle: prepare 0.2.0 após back-merge passa" prepare 0.2.0 --dry-run
 expect_out "base do CHANGELOG é a tag anterior" "desde \`v0.1.0\`"
 expect_out "commit novo listado" "- **core:** next thing"
+expect_out "chore(release) que não é bump é listado" "- **release:** tweak the harness"
 expect_no_out "commits da 0.1.0 não se repetem" "add thing"
 expect_out "bump parte de 0.1.0" "+version: 0.2.0"
 expect_fail "recusa versão não maior que a atual/última tag" "não é maior que" prepare 0.0.5 --dry-run
 # With --since before the release, the range includes chore(release): v0.1.0.
 expect_ok "--since no ponto de fork passa (conservação inclui o filtrado)" prepare 0.2.0 --dry-run --since "$FORK_POINT"
-expect_no_out "chore(release) filtrado do CHANGELOG" "**release:**"
+expect_no_out "commit de bump chore(release): v0.1.0 filtrado" "**release:** v0.1.0"
+expect_out "outro chore(release) segue listado com --since" "- **release:** tweak the harness"
 expect_out "--since vira o rótulo da base" "desde \`$FORK_POINT\`"
 
 echo

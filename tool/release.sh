@@ -300,7 +300,10 @@ classify_commit() {
   local sha="$1" pr="$2" subject body type scope bang desc group
   subject="$(git log -1 --format=%s "$sha")"
   body="$(git log -1 --format=%b "$sha")"
-  if [[ "$subject" =~ ^chore\(release\) ]]; then
+  # Only the bump commit made by `prepare` is noise; other chore(release)
+  # commits (e.g. changes to this harness) are listed.
+  local bump_re='^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+$'
+  if [[ "$subject" =~ $bump_re ]]; then
     FILTERED=$((FILTERED + 1))
     return
   fi
