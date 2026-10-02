@@ -326,6 +326,20 @@ void defineErrorScrubTests() {
       _expectNoLeak(_flattenLog(log));
     });
 
+    // O scrub do corpo vale para qualquer severidade: chamadores logam
+    // `error.toString()` também em info.
+    test('logger.info scrubs a URL in the body', () async {
+      Otel.instance.loggerProvider
+          .getLogger('scrub-body-info')
+          .info('GET $_leakyUrl failed');
+      await Otel.forceFlush();
+
+      final log = logExporter.lastLogNamed('scrub-body-info')!;
+      expect(log.severity, SeverityNumber.info);
+      expect(log.body, 'GET https://bucket.s3.amazonaws.com/… failed');
+      _expectNoLeak(_flattenLog(log));
+    });
+
     test('OtelLogExtension scrubs a URL in the message', () async {
       _TestLogBridge().forward(
         level: 'error',
