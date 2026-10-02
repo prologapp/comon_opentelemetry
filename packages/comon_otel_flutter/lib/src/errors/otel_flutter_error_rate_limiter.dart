@@ -43,10 +43,20 @@ final class OtelFlutterErrorRateLimiter {
 
   /// Sets the limit ([maxPerMinute]; `null` disables limiting) and the clock
   /// ([now], mainly for tests). Clears every tracked window.
+  ///
+  /// Throws an [ArgumentError] when [maxPerMinute] is below 1, leaving the
+  /// current limit, clock and windows untouched.
   static void configure({
     int? maxPerMinute = defaultMaxPerMinute,
     DateTime Function()? now,
   }) {
+    if (maxPerMinute != null && maxPerMinute < 1) {
+      throw ArgumentError.value(
+        maxPerMinute,
+        'maxPerMinute',
+        'must be at least 1, or null to disable the limit',
+      );
+    }
     _maxPerMinute = maxPerMinute;
     _now = now ?? DateTime.now;
     _windows.clear();

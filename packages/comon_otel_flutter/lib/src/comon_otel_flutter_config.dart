@@ -210,7 +210,8 @@ final class ComonOtelFlutterConfig {
   /// span and a log per minute (default 5). Occurrences above it are only
   /// counted in `flutter.error.suppressed.count`; the app's error fallback
   /// and error hooks still run for every occurrence. `null` disables the
-  /// limit.
+  /// limit; a value below 1 makes `ComonOtelFlutter.install` throw an
+  /// [ArgumentError].
   final int? maxErrorTelemetryPerGroupPerMinute;
 
   /// Metric name for the free storage milestone gauge.

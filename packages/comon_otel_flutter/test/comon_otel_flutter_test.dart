@@ -1915,6 +1915,62 @@ void main() {
       expect(OtelFlutterErrorRateLimiter.tryAcquire('newcomer'), isTrue);
     });
 
+    test('configure rejects a limit below 1 and keeps the current one', () {
+      OtelFlutterErrorRateLimiter.configure(maxPerMinute: 3);
+      for (final invalid in <int>[0, -1]) {
+        expect(
+          () => OtelFlutterErrorRateLimiter.configure(maxPerMinute: invalid),
+          throwsArgumentError,
+        );
+      }
+      expect(OtelFlutterErrorRateLimiter.maxPerMinute, 3);
+
+      OtelFlutterErrorRateLimiter.configure(maxPerMinute: null);
+      expect(OtelFlutterErrorRateLimiter.maxPerMinute, isNull);
+      OtelFlutterErrorRateLimiter.configure(maxPerMinute: 1);
+      expect(OtelFlutterErrorRateLimiter.maxPerMinute, 1);
+    });
+
+    test('install rejects a config limit below 1 before touching the '
+        'active installation', () async {
+      const valid = ComonOtelFlutterConfig(
+        observeAppLifecycle: false,
+        trackNavigatorRoutes: false,
+        trackAppStartup: false,
+      );
+      final active = ComonOtelFlutter.install(
+        config: valid,
+        flutterExceptionHandler: (_) {},
+      );
+      addTearDown(active.dispose);
+      final installedHandler = FlutterError.onError;
+
+      // A new Otel instance would make install dispose the active one.
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'invalid-limit',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(spanExporter)],
+        metricReaders: <MetricReader>[
+          ExportingMetricReader(exporter: metricExporter),
+        ],
+        logProcessors: <LogProcessor>[SimpleLogProcessor(logExporter)],
+      );
+      expect(
+        () => ComonOtelFlutter.install(
+          config: const ComonOtelFlutterConfig(
+            observeAppLifecycle: false,
+            trackNavigatorRoutes: false,
+            trackAppStartup: false,
+            maxErrorTelemetryPerGroupPerMinute: 0,
+          ),
+          flutterExceptionHandler: (_) {},
+        ),
+        throwsArgumentError,
+      );
+
+      expect(FlutterError.onError, same(installedHandler));
+    });
+
     test('the limit comes from ComonOtelFlutterConfig', () async {
       final instrumentation = ComonOtelFlutter.install(
         config: ComonOtelFlutterConfig(
