@@ -63,7 +63,7 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
     }
 
     return _foregroundHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createHistogram(
           foregroundDurationMetricName,
           unit: 'ms',
@@ -78,7 +78,7 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
     }
 
     return _backgroundHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createHistogram(
           backgroundDurationMetricName,
           unit: 'ms',
@@ -93,7 +93,7 @@ final class OtelFlutterBindingObserver with WidgetsBindingObserver {
     }
 
     return _memoryPressureCounterCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createIntCounter(
           memoryPressureCountMetricName,
           description: 'Count of Flutter memory pressure callbacks.',
