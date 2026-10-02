@@ -68,6 +68,38 @@ void defineValueLengthLimitTests() {
       );
     });
 
+    test('defaults to 4 KiB for ordinary event and link attributes', () async {
+      SpanLink linkWith(String spanId) => SpanLink(
+        context: SpanContext.local(
+          traceId: const TraceId('11111111111111111111111111111111'),
+          spanId: SpanId(spanId),
+          traceFlags: TraceFlags.sampled,
+        ),
+        attributes: <String, Object>{'big': _hugeStack, 'small': 'ok'},
+      );
+      final span = Otel.instance.tracer.startSpan(
+        'event-link',
+        links: <SpanLink>[linkWith('2222222222222222')],
+      );
+      span.addEvent(
+        'cache.miss',
+        attributes: <String, Object>{'big': _hugeStack, 'small': 'ok'},
+      );
+      span.addLink(linkWith('3333333333333333'));
+      await span.end();
+
+      final data = exporter.lastSpanNamed('event-link')!;
+      final event = data.events.single;
+      expect(event.name, 'cache.miss');
+      _expectTruncatedTo(event.attributes['big'], _defaultValueLimit);
+      expect(event.attributes['small'], 'ok');
+      expect(data.links, hasLength(2));
+      for (final link in data.links) {
+        _expectTruncatedTo(link.attributes['big'], _defaultValueLimit);
+        expect(link.attributes['small'], 'ok');
+      }
+    });
+
     test('defaults to 4 KiB for log attributes and body', () async {
       Otel.instance.loggerProvider
           .getLogger('huge-logger')
