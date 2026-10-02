@@ -296,8 +296,8 @@ houver admin:
 | `o código em HEAD difere de origin/dev` | checkout desatualizado ou com commit local | `git switch dev && git pull` |
 | `literais de versão em lib/ divergem` | literal novo com versão fixa diferente | alinhar o literal com a versão dos pubspecs num PR para a `dev` |
 | `CHANGELOG perdeu commits` | histórico com forma inesperada (ex.: merge octopus) | investigar o range; `--since` ajusta a base |
-| `tem a versão X nos pubspecs, não Y` (no `tag`) | o PR mergeado não é o de release, ou o merge foi squash | conferir o PR e usar `--commit` com o merge commit certo |
-| `não está na linha first-parent`, `não é merge commit` ou `não é o merge que trouxe` (no `tag`) | o commit passado não é o merge do PR de release na `main` (ex.: o `chore(release)` da branch, ou um commit posterior) | `--commit` com o merge commit do PR de release |
+| `tem a versão X nos pubspecs, não Y` (no `tag`) | o PR mergeado não é o de release | conferir o PR e usar `--commit` com o merge commit certo |
+| `não está na linha first-parent`, `não é merge commit` ou `não é o merge que trouxe` (no `tag`) | o commit passado não é o merge do PR de release na `main` (ex.: o `chore(release)` da branch, ou um commit posterior), ou o PR entrou por squash ou fast-forward | `--commit` com o merge commit do PR de release; se não houver merge commit, a release precisa ser refeita com "Create a merge commit" |
 | gate `test ...` falhou | regressão, ou o flaky de transport | ver o log impresso; se for o flaky conhecido, rodar o teste isolado |
 
 ## Testes do harness
