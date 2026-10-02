@@ -49,9 +49,14 @@ criada, `dev` já contendo a release.
 A tag `release/0.0.1-alpha.1` é herança do upstream (`serezhia`) e não segue esse
 esquema. O harness só considera tags `vX.Y.Z`.
 
-**Os dois PRs (release e back-merge) são mergeados com "Create a merge commit"**, nunca com
-squash ou rebase. O `prepare` seguinte exige que a última tag seja ancestral da
-`dev`. Com squash, a ancestralidade se perde e o harness recusa com "back-merge pendente".
+**Todo PR deste repo é mergeado com "Create a merge commit"**, nunca com squash ou
+rebase. Há dois motivos:
+
+- **Release e back-merge.** O `prepare` seguinte exige que a última tag seja ancestral
+  da `dev`. Com squash, a ancestralidade se perde e o harness recusa com "back-merge pendente".
+- **PRs de feature/fix para a `dev`.** O CHANGELOG é gerado das mensagens dos commits
+  que o merge traz. Num squash, o commit vira o título do PR (`[PL-XXXX] ...`), que
+  não é convencional. A entrada cai em "Other" e perde o tipo e o escopo.
 
 ## Pré-requisitos
 
@@ -138,6 +143,12 @@ CHANGELOG rápido, nunca para liberar.
 É um PR como outro qualquer: CodeRabbit e `/pr-merge-gate`. O diff é só versão e
 CHANGELOG. O código já foi revisado nos PRs para a `dev`. O que revisar aqui é o
 CHANGELOG e o número. **Merge com "Create a merge commit".**
+
+**A seção gerada pode ser editada dentro deste PR**, e esse é o lugar de editar.
+Exemplos: mover para "Breaking changes" uma quebra que veio sem `!`, cortar ruído ou
+escrever um parágrafo de destaque. O `tag` lê o CHANGELOG do merge commit, então a
+edição chega às notas do GitHub Release. Não mexa no cabeçalho `## X.Y.Z - data`: é
+por ele que o `tag` acha a seção.
 
 ### 3. `tag`
 
@@ -260,8 +271,9 @@ houver admin:
    "só `release/*` e `hotfix/*`" depende de quem mergeia, ou de um check de CI que falhe
    quando a head não casa `^(release|hotfix)/v`.
 3. **Proteção da `dev`**: PR obrigatório, sem force-push.
-4. **Métodos de merge**: manter "Allow merge commits" habilitado. Release e back-merge
-   dependem dele.
+4. **Métodos de merge**: deixar só "Allow merge commits" e desligar squash e rebase.
+   Release, back-merge e o CHANGELOG gerado dependem disso (ver
+   [Modelo de branches e tags](#modelo-de-branches-e-tags)).
 5. **Ruleset de tags `v*`**: bloquear update e deletion, ou seja, tag imutável.
    Restringir criação a mantenedores. Habilitar *immutable releases*, se disponível.
 6. **Actions**: ao religar, rodar em runner self-hosted (nunca `ubuntu-latest`, decisão
