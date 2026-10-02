@@ -31,11 +31,13 @@ final class LoggerProvider {
 
   /// Sends [record] through every configured log processor.
   ///
-  /// Exception text (`exception.message`, `exception.stacktrace`) has its
-  /// URLs reduced to scheme and host (see [scrubUrls]), whichever path
-  /// produced the record ([OtelLogger.error], a log bridge, a raw [emit]).
-  /// String attribute values and the body are then cut to [logLimits]
-  /// (see [attributeValueTruncationMarker]).
+  /// The body and the exception text (`exception.message`,
+  /// `exception.stacktrace`) have their URLs reduced to scheme and host (see
+  /// [scrubUrls]), whichever path produced the record ([OtelLogger.error], a
+  /// log bridge, a raw [emit]) and whatever its severity: callers routinely
+  /// log `error.toString()` as the body. String attribute values and the
+  /// body are then cut to [logLimits] (see [attributeValueTruncationMarker]),
+  /// so the cut never keeps a path the scrub would have dropped.
   ///
   /// Every record is stamped with the isolate's `session.id` first. Log
   /// records are immutable value objects and [LogProcessor.onEmit] fans out
@@ -56,7 +58,7 @@ final class LoggerProvider {
       observedTimestamp: record.observedTimestamp,
       severity: record.severity,
       severityText: record.severityText,
-      body: truncateValue(record.body, logLimits.bodyLengthLimit),
+      body: truncateValue(scrubUrls(record.body), logLimits.bodyLengthLimit),
       resource: record.resource,
       spanContext: record.spanContext,
       loggerName: record.loggerName,

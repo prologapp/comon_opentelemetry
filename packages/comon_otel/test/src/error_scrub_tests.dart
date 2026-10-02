@@ -264,5 +264,57 @@ void defineErrorScrubTests() {
 
       _expectNoLeak(_flattenLog(logExporter.lastLogNamed('scrub-bridge')!));
     });
+
+    test('logger.error scrubs a URL in the body', () async {
+      Otel.instance.loggerProvider
+          .getLogger('scrub-body')
+          .error(_UrlInMessageError().toString());
+      await Otel.forceFlush();
+
+      final log = logExporter.lastLogNamed('scrub-body')!;
+      expect(
+        log.body,
+        'ClientException: Connection closed, '
+        'uri=https://bucket.s3.amazonaws.com/…',
+      );
+      _expectNoLeak(_flattenLog(log));
+    });
+
+    test('OtelLogExtension scrubs a URL in the message', () async {
+      _TestLogBridge().forward(
+        level: 'error',
+        message: 'GET $_leakyUrl failed',
+        loggerName: 'scrub-bridge-body',
+      );
+      await Otel.forceFlush();
+
+      final log = logExporter.lastLogNamed('scrub-bridge-body')!;
+      expect(log.body, 'GET https://bucket.s3.amazonaws.com/… failed');
+      _expectNoLeak(_flattenLog(log));
+    });
+
+    test('the body is scrubbed before it is cut to the body limit', () async {
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'scrub-body-limit',
+        logLimits: const LogLimits(bodyLengthLimit: 60),
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(exporter)],
+        metricReaders: <MetricReader>[
+          ExportingMetricReader(exporter: metricExporter),
+        ],
+        logProcessors: <LogProcessor>[SimpleLogProcessor(logExporter)],
+      );
+
+      // Cut first, the 60-unit prefix would keep `/colaboradores/1234…`.
+      Otel.instance.loggerProvider
+          .getLogger('scrub-body-limit')
+          .error('GET $_leakyUrl ${'x' * 200}');
+      await Otel.forceFlush();
+
+      final log = logExporter.lastLogNamed('scrub-body-limit')!;
+      expect(log.body, startsWith('GET https://bucket.s3.amazonaws.com/… x'));
+      expect(log.body.length, lessThanOrEqualTo(60));
+      _expectNoLeak(_flattenLog(log));
+    });
   });
 }
