@@ -26,6 +26,18 @@ final class _CountingSpanExporter implements SpanExporter {
   Future<void> shutdown() async {}
 }
 
+/// Erro que conta quantas vezes o toString foi chamado: prova se a montagem
+/// dos atributos (que chama toString) rodou para uma ocorrência.
+final class _CountingToStringError implements Exception {
+  int toStringCalls = 0;
+
+  @override
+  String toString() {
+    toStringCalls += 1;
+    return 'counting error';
+  }
+}
+
 final class _ThrowingFlushSpanExporter implements SpanExporter {
   bool failFlush = true;
 
@@ -73,6 +85,7 @@ void main() {
     OtelFlutterErrorHooks.clear();
     OtelFlutterBreadcrumbs.clear();
     OtelFlutterRouteContext.clear();
+    OtelFlutterErrorRateLimiter.reset();
   });
 
   test('mobileResourceAttributesFrom builds OTel resource attributes', () {
@@ -1634,6 +1647,555 @@ void main() {
     );
   });
 
+  group('error telemetry never carries a URL path or query', () {
+    test('framework error: message, context, diagnostics, breadcrumbs, '
+        'status, event and log', () async {
+      OtelFlutterBreadcrumbs.add(category: 'http', message: 'GET $_leakyUrl');
+
+      recordFlutterFrameworkError(
+        FlutterErrorDetails(
+          exception: _UrlInMessageError(),
+          stack: _stackWithUrl(),
+          context: ErrorDescription('while fetching $_leakyUrl'),
+          informationCollector: () sync* {
+            yield DiagnosticsNode.message(
+              'Image provider: NetworkImage("$_leakyUrl", scale: 1.0)',
+            );
+          },
+        ),
+        fallback: (_) {},
+      );
+      await Otel.forceFlush();
+
+      final errorSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'flutter.error',
+      );
+      final errorLog = logExporter.logs.singleWhere(
+        (log) => log.body == 'flutter.framework_error',
+      );
+
+      expect(
+        errorSpan.attributes['flutter.error.diagnostics'],
+        contains('NetworkImage("https://bucket.s3.amazonaws.com/…"'),
+      );
+      expect(errorSpan.statusDescription, isNotNull);
+      expect(
+        errorSpan.events.map((event) => event.name),
+        contains('exception'),
+      );
+      _expectNoLeak(_flattenSpan(errorSpan));
+      _expectNoLeak(_flattenLog(errorLog));
+    });
+
+    test('platform error: attributes, status, event and log', () async {
+      recordFlutterPlatformError(
+        _UrlInMessageError(),
+        _stackWithUrl(),
+        fallback: (error, stackTrace) => true,
+      );
+      await Otel.forceFlush();
+
+      final errorSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'flutter.platform_error',
+      );
+      final errorLog = logExporter.logs.singleWhere(
+        (log) => log.body == 'flutter.platform_error',
+      );
+
+      expect(
+        errorLog.attributes[SemanticAttributes.exceptionMessage],
+        contains('uri=https://bucket.s3.amazonaws.com/…'),
+      );
+      _expectNoLeak(_flattenSpan(errorSpan));
+      _expectNoLeak(_flattenLog(errorLog));
+    });
+
+    test('error hooks receive scrubbed attributes', () async {
+      OtelFlutterErrorSnapshot? captured;
+      OtelFlutterErrorHooks.configure(
+        platformErrorListener: (snapshot) => captured = snapshot,
+      );
+
+      recordFlutterPlatformError(
+        _UrlInMessageError(),
+        _stackWithUrl(),
+        fallback: (error, stackTrace) => true,
+      );
+
+      expect(captured, isNotNull);
+      _expectNoLeak(captured!.attributes.values.join(' '));
+    });
+
+    test('startup trackPhase error: status and event', () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: const ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+        ),
+      );
+
+      await expectLater(
+        instrumentation.startupTracker!.trackPhase<void>(
+          'upload',
+          () async =>
+              Error.throwWithStackTrace(_UrlInMessageError(), _stackWithUrl()),
+        ),
+        throwsA(isA<_UrlInMessageError>()),
+      );
+      await Otel.forceFlush();
+
+      final phaseSpan = spanExporter.spans.singleWhere(
+        (span) => span.name == 'app.startup.upload',
+      );
+      expect(phaseSpan.status, SpanStatus.error);
+      _expectNoLeak(_flattenSpan(phaseSpan));
+
+      instrumentation.dispose();
+    });
+  });
+
+  group('error telemetry rate limit', () {
+    late DateTime fakeNow;
+
+    setUp(() {
+      fakeNow = DateTime.utc(2026, 10, 1, 12);
+      OtelFlutterErrorRateLimiter.configure(now: () => fakeNow);
+    });
+
+    Iterable<SpanData> spansNamed(String name) =>
+        spanExporter.spans.where((span) => span.name == name);
+    Iterable<LogRecord> logsWithBody(String body) =>
+        logExporter.logs.where((log) => log.body == body);
+
+    test('100 identical errors in a minute export 5 spans and 5 logs; '
+        'the fallback runs 100 times and the rest is counted', () async {
+      var fallbackCalls = 0;
+      for (var i = 0; i < 100; i++) {
+        // 100 errors spread over 50 s: all inside one window.
+        fakeNow = fakeNow.add(const Duration(milliseconds: 500));
+        recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: StateError('loop'),
+            stack: StackTrace.current,
+          ),
+          fallback: (_) => fallbackCalls += 1,
+        );
+      }
+      await Otel.forceFlush();
+
+      expect(fallbackCalls, 100);
+      expect(spansNamed('flutter.error'), hasLength(5));
+      expect(logsWithBody('flutter.framework_error'), hasLength(5));
+
+      final suppressed = metricExporter.lastMetricNamed(
+        'flutter.error.suppressed.count',
+      );
+      expect(suppressed, isNotNull);
+      expect(suppressed!.instrumentType, MetricInstrumentType.counter);
+      expect(suppressed.points.single.value, 95);
+      expect(suppressed.points.single.attributes, <String, Object>{
+        'flutter.error.source': 'framework',
+      });
+    });
+
+    test('a different group has its own quota, and a suppressed platform '
+        'error still returns the fallback verdict', () async {
+      var platformFallbackCalls = 0;
+      for (var i = 0; i < 8; i++) {
+        recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: StateError('a'),
+            stack: StackTrace.current,
+          ),
+          fallback: (_) {},
+        );
+      }
+      for (var i = 0; i < 8; i++) {
+        final handled = recordFlutterPlatformError(
+          ArgumentError('b'),
+          StackTrace.current,
+          fallback: (error, stackTrace) {
+            platformFallbackCalls += 1;
+            return true;
+          },
+        );
+        expect(handled, isTrue);
+      }
+      await Otel.forceFlush();
+
+      expect(spansNamed('flutter.error'), hasLength(5));
+      expect(spansNamed('flutter.platform_error'), hasLength(5));
+      expect(logsWithBody('flutter.platform_error'), hasLength(5));
+      expect(platformFallbackCalls, 8);
+    });
+
+    test('two groups of the same source have independent quotas', () async {
+      for (var i = 0; i < 8; i++) {
+        for (final exception in <Object>[StateError('a'), ArgumentError('b')]) {
+          recordFlutterFrameworkError(
+            FlutterErrorDetails(
+              exception: exception,
+              stack: StackTrace.current,
+            ),
+            fallback: (_) {},
+          );
+        }
+      }
+      await Otel.forceFlush();
+
+      final groups = spansNamed(
+        'flutter.error',
+      ).map((span) => span.attributes['error.group.name']).toList();
+      expect(groups, hasLength(10));
+      expect(
+        groups.where((group) => group == 'framework:StateError'),
+        hasLength(5),
+      );
+      expect(
+        groups.where((group) => group == 'framework:ArgumentError'),
+        hasLength(5),
+      );
+      expect(
+        metricExporter
+            .lastMetricNamed('flutter.error.suppressed.count')!
+            .points
+            .single
+            .value,
+        6,
+      );
+    });
+
+    test('a null limit exports every occurrence', () async {
+      OtelFlutterErrorRateLimiter.configure(
+        maxPerMinute: null,
+        now: () => fakeNow,
+      );
+      for (var i = 0; i < 12; i++) {
+        recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: StateError('unlimited'),
+            stack: StackTrace.current,
+          ),
+          fallback: (_) {},
+        );
+      }
+      await Otel.forceFlush();
+
+      expect(spansNamed('flutter.error'), hasLength(12));
+      expect(logsWithBody('flutter.framework_error'), hasLength(12));
+      expect(
+        metricExporter.lastMetricNamed('flutter.error.suppressed.count'),
+        isNull,
+      );
+    });
+
+    test('the quota renews after one minute', () async {
+      void fire() => recordFlutterFrameworkError(
+        FlutterErrorDetails(
+          exception: StateError('renew'),
+          stack: StackTrace.current,
+        ),
+        fallback: (_) {},
+      );
+
+      for (var i = 0; i < 7; i++) {
+        fire();
+      }
+      fakeNow = fakeNow.add(const Duration(seconds: 59));
+      fire();
+      await Otel.forceFlush();
+      expect(spansNamed('flutter.error'), hasLength(5));
+
+      fakeNow = fakeNow.add(const Duration(seconds: 1));
+      fire();
+      fire();
+      await Otel.forceFlush();
+      expect(spansNamed('flutter.error'), hasLength(7));
+      expect(logsWithBody('flutter.framework_error'), hasLength(7));
+    });
+
+    void fillTrackedGroups() {
+      for (var i = 0; i < OtelFlutterErrorRateLimiter.maxTrackedGroups; i++) {
+        expect(OtelFlutterErrorRateLimiter.tryAcquire('g$i'), isTrue);
+      }
+    }
+
+    test('a full table never forgets a group whose window is active', () {
+      fillTrackedGroups();
+      // g0, the oldest tracked group, spends its whole quota.
+      for (
+        var i = 1;
+        i < OtelFlutterErrorRateLimiter.defaultMaxPerMinute;
+        i++
+      ) {
+        expect(OtelFlutterErrorRateLimiter.tryAcquire('g0'), isTrue);
+      }
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('g0'), isFalse);
+
+      fakeNow = fakeNow.add(const Duration(seconds: 10));
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('newcomer'), isFalse);
+
+      // Still inside g0's minute: forgetting g0 would hand it a fresh quota.
+      fakeNow = fakeNow.add(const Duration(seconds: 10));
+      for (var i = 0; i < 10; i++) {
+        expect(OtelFlutterErrorRateLimiter.tryAcquire('g0'), isFalse);
+      }
+    });
+
+    test('a new group with a full table is suppressed and counted', () async {
+      fillTrackedGroups();
+      var fallbackCalls = 0;
+      recordFlutterFrameworkError(
+        FlutterErrorDetails(
+          exception: StateError('newcomer'),
+          stack: StackTrace.current,
+        ),
+        fallback: (_) => fallbackCalls += 1,
+      );
+      await Otel.forceFlush();
+
+      expect(fallbackCalls, 1);
+      expect(spansNamed('flutter.error'), isEmpty);
+      expect(
+        metricExporter
+            .lastMetricNamed('flutter.error.suppressed.count')!
+            .points
+            .single
+            .value,
+        1,
+      );
+    });
+
+    test('a new group is accepted again once the windows expire', () {
+      fillTrackedGroups();
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('newcomer'), isFalse);
+
+      fakeNow = fakeNow.add(OtelFlutterErrorRateLimiter.window);
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('newcomer'), isTrue);
+    });
+
+    test('configure rejects a limit below 1 and keeps the current one', () {
+      OtelFlutterErrorRateLimiter.configure(maxPerMinute: 3);
+      for (final invalid in <int>[0, -1]) {
+        expect(
+          () => OtelFlutterErrorRateLimiter.configure(maxPerMinute: invalid),
+          throwsArgumentError,
+        );
+      }
+      expect(OtelFlutterErrorRateLimiter.maxPerMinute, 3);
+
+      OtelFlutterErrorRateLimiter.configure(maxPerMinute: null);
+      expect(OtelFlutterErrorRateLimiter.maxPerMinute, isNull);
+      OtelFlutterErrorRateLimiter.configure(maxPerMinute: 1);
+      expect(OtelFlutterErrorRateLimiter.maxPerMinute, 1);
+    });
+
+    test('a rejected configure keeps the active windows and the clock', () {
+      OtelFlutterErrorRateLimiter.configure(
+        maxPerMinute: 2,
+        now: () => fakeNow,
+      );
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isTrue);
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isTrue);
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isFalse);
+
+      for (final invalid in <int>[0, -1]) {
+        expect(
+          () => OtelFlutterErrorRateLimiter.configure(maxPerMinute: invalid),
+          throwsArgumentError,
+        );
+      }
+
+      // Mesma janela: limpar as janelas daria cota nova ao grupo esgotado, e
+      // trocar o relógio falso pelo real também (o real já passou do fim da
+      // janela aberta em fakeNow).
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isFalse);
+      // E o grupo não fica preso: a janela acaba quando o relógio anda.
+      fakeNow = fakeNow.add(OtelFlutterErrorRateLimiter.window);
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isTrue);
+    });
+
+    test('install rejects a config limit below 1 before touching the '
+        'active installation', () async {
+      const valid = ComonOtelFlutterConfig(
+        observeAppLifecycle: false,
+        trackNavigatorRoutes: false,
+        trackAppStartup: false,
+      );
+      final active = ComonOtelFlutter.install(
+        config: valid,
+        flutterExceptionHandler: (_) {},
+      );
+      addTearDown(active.dispose);
+      final installedHandler = FlutterError.onError;
+
+      // A new Otel instance would make install dispose the active one.
+      await Otel.shutdown();
+      await Otel.init(
+        serviceName: 'invalid-limit',
+        spanProcessors: <SpanProcessor>[SimpleSpanProcessor(spanExporter)],
+        metricReaders: <MetricReader>[
+          ExportingMetricReader(exporter: metricExporter),
+        ],
+        logProcessors: <LogProcessor>[SimpleLogProcessor(logExporter)],
+      );
+      expect(
+        () => ComonOtelFlutter.install(
+          config: const ComonOtelFlutterConfig(
+            observeAppLifecycle: false,
+            trackNavigatorRoutes: false,
+            trackAppStartup: false,
+            maxErrorTelemetryPerGroupPerMinute: 0,
+          ),
+          flutterExceptionHandler: (_) {},
+        ),
+        throwsArgumentError,
+      );
+
+      expect(FlutterError.onError, same(installedHandler));
+    });
+
+    test('the limit comes from ComonOtelFlutterConfig', () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          trackAppStartup: false,
+          maxErrorTelemetryPerGroupPerMinute: 2,
+          now: () => fakeNow,
+        ),
+        flutterExceptionHandler: (_) {},
+      );
+
+      for (var i = 0; i < 4; i++) {
+        FlutterError.onError?.call(
+          FlutterErrorDetails(
+            exception: StateError('configured'),
+            stack: StackTrace.current,
+          ),
+        );
+      }
+      await Otel.forceFlush();
+
+      expect(spansNamed('flutter.error'), hasLength(2));
+      instrumentation.dispose();
+    });
+
+    // O limitador decide antes da montagem dos atributos: uma ocorrência
+    // suprimida (sem hook configurado) não chama toString, não coleta
+    // diagnostics nem breadcrumbs e não passa pelo scrub.
+    test(
+      'a suppressed framework error does not build its attributes',
+      () async {
+        final error = _CountingToStringError();
+        var fallbackCalls = 0;
+        void fire() => recordFlutterFrameworkError(
+          FlutterErrorDetails(exception: error, stack: StackTrace.current),
+          fallback: (_) => fallbackCalls += 1,
+        );
+
+        for (
+          var i = 0;
+          i < OtelFlutterErrorRateLimiter.defaultMaxPerMinute;
+          i++
+        ) {
+          fire();
+        }
+        final toStringCallsWithinQuota = error.toStringCalls;
+        expect(toStringCallsWithinQuota, greaterThan(0));
+
+        for (var i = 0; i < 15; i++) {
+          fire();
+        }
+        await Otel.forceFlush();
+
+        expect(error.toStringCalls, toStringCallsWithinQuota);
+        expect(fallbackCalls, 20);
+        expect(spansNamed('flutter.error'), hasLength(5));
+        expect(
+          metricExporter
+              .lastMetricNamed('flutter.error.suppressed.count')!
+              .points
+              .single
+              .value,
+          15,
+        );
+      },
+    );
+
+    test('a suppressed platform error does not build its attributes and '
+        'keeps the fallback verdict', () async {
+      final error = _CountingToStringError();
+      var fallbackCalls = 0;
+      bool fire() => recordFlutterPlatformError(
+        error,
+        StackTrace.current,
+        fallback: (_, _) {
+          fallbackCalls += 1;
+          return true;
+        },
+      );
+
+      for (
+        var i = 0;
+        i < OtelFlutterErrorRateLimiter.defaultMaxPerMinute;
+        i++
+      ) {
+        expect(fire(), isTrue);
+      }
+      final toStringCallsWithinQuota = error.toStringCalls;
+      expect(toStringCallsWithinQuota, greaterThan(0));
+
+      for (var i = 0; i < 15; i++) {
+        expect(fire(), isTrue);
+      }
+      await Otel.forceFlush();
+
+      expect(error.toStringCalls, toStringCallsWithinQuota);
+      expect(fallbackCalls, 20);
+      expect(spansNamed('flutter.platform_error'), hasLength(5));
+      expect(
+        metricExporter
+            .lastMetricNamed('flutter.error.suppressed.count')!
+            .points
+            .single
+            .value,
+        15,
+      );
+    });
+
+    test('an error hook still gets full attributes for suppressed '
+        'occurrences', () async {
+      final snapshots = <OtelFlutterErrorSnapshot>[];
+      OtelFlutterErrorHooks.configure(frameworkErrorListener: snapshots.add);
+
+      for (var i = 0; i < 20; i++) {
+        recordFlutterFrameworkError(
+          FlutterErrorDetails(
+            exception: _CountingToStringError(),
+            stack: StackTrace.current,
+          ),
+          fallback: (_) {},
+        );
+      }
+      await Otel.forceFlush();
+
+      expect(snapshots, hasLength(20));
+      for (final snapshot in snapshots) {
+        expect(
+          snapshot.attributes[SemanticAttributes.exceptionMessage],
+          'counting error',
+        );
+        expect(
+          snapshot.attributes['error.group.name'],
+          'framework:_CountingToStringError',
+        );
+      }
+      expect(spansNamed('flutter.error'), hasLength(5));
+    });
+  });
+
   test('interaction helpers trace tap callbacks with route context', () async {
     OtelFlutterRouteContext.update(
       routeName: '/checkout',
@@ -1887,4 +2449,65 @@ void main() {
 final class _ToStringThrows {
   @override
   String toString() => throw StateError('toString boom');
+}
+
+/// URL whose path carries a CPF and whose query carries an S3 signature.
+const String _leakyUrl =
+    'https://bucket.s3.amazonaws.com/colaboradores/12345678900/foto.jpg'
+    '?X-Amz-Signature=deadbeefcafe&X-Amz-Credential=AKIA#frag';
+
+/// Fragments of [_leakyUrl] that must not survive scrubbing.
+const List<String> _leakyFragments = <String>[
+  '12345678900',
+  'colaboradores',
+  'foto.jpg',
+  'X-Amz-Signature',
+  'deadbeefcafe',
+  'AKIA',
+  '#frag',
+];
+
+final class _UrlInMessageError implements Exception {
+  @override
+  String toString() => 'ClientException: Connection closed, uri=$_leakyUrl';
+}
+
+StackTrace _stackWithUrl() => StackTrace.fromString(
+  <String>[
+    '#0      Uploader.put (package:app/uploader.dart:10:3)',
+    '#1      request $_leakyUrl',
+    '#2      main (package:app/main.dart:5:1)',
+  ].join(String.fromCharCode(10)),
+);
+
+/// Flattens every exported string of a span (attributes, events, status).
+String _flattenSpan(SpanData span) {
+  final buffer = StringBuffer()
+    ..writeln(span.name)
+    ..writeln(span.statusDescription ?? '');
+  for (final value in span.attributes.values) {
+    buffer.writeln(value);
+  }
+  for (final event in span.events) {
+    buffer.writeln(event.name);
+    for (final value in event.attributes.values) {
+      buffer.writeln(value);
+    }
+  }
+  return buffer.toString();
+}
+
+/// Flattens every exported string of a log record (body and attributes).
+String _flattenLog(LogRecord log) {
+  final buffer = StringBuffer()..writeln(log.body);
+  for (final value in log.attributes.values) {
+    buffer.writeln(value);
+  }
+  return buffer.toString();
+}
+
+void _expectNoLeak(String flattened) {
+  for (final fragment in _leakyFragments) {
+    expect(flattened, isNot(contains(fragment)), reason: flattened);
+  }
 }

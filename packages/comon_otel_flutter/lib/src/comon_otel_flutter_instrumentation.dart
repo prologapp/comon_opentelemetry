@@ -6,6 +6,7 @@ import 'comon_otel_flutter_config.dart';
 import 'errors/otel_flutter_breadcrumbs.dart';
 import 'errors/otel_flutter_error_hooks.dart';
 import 'errors/otel_flutter_error_integration.dart';
+import 'errors/otel_flutter_error_rate_limiter.dart';
 import 'lifecycle/otel_flutter_binding_observer.dart';
 import 'navigation/otel_navigator_observer.dart';
 import 'performance/otel_flutter_frame_timing_observer.dart';
@@ -30,12 +31,25 @@ final class ComonOtelFlutter {
   /// to reinstall with a different configuration. An active installation
   /// left over from a previous [Otel] instance is disposed and replaced, so
   /// observers and error hooks are never chained twice.
+  ///
+  /// Throws an [ArgumentError] when
+  /// [ComonOtelFlutterConfig.maxErrorTelemetryPerGroupPerMinute] is below 1,
+  /// before any installation is touched.
   static ComonOtelFlutterInstrumentation install({
     ComonOtelFlutterConfig config = const ComonOtelFlutterConfig(),
     WidgetsBinding? binding,
     FlutterExceptionHandler? flutterExceptionHandler,
     OtelPlatformErrorCallback? platformDispatcherErrorCallback,
   }) {
+    final errorLimit = config.maxErrorTelemetryPerGroupPerMinute;
+    if (errorLimit != null && errorLimit < 1) {
+      throw ArgumentError.value(
+        errorLimit,
+        'maxErrorTelemetryPerGroupPerMinute',
+        'must be at least 1, or null to disable the limit',
+      );
+    }
+
     final otel = Otel.isInitialized ? Otel.instance : null;
     final active = _active;
     if (active != null && !active._disposed) {
@@ -74,6 +88,10 @@ final class ComonOtelFlutter {
       breadcrumbListener: config.breadcrumbListener,
       frameworkErrorListener: config.frameworkErrorListener,
       platformErrorListener: config.platformErrorListener,
+    );
+    OtelFlutterErrorRateLimiter.configure(
+      maxPerMinute: config.maxErrorTelemetryPerGroupPerMinute,
+      now: config.now,
     );
     if (config.trackBreadcrumbs) {
       OtelFlutterBreadcrumbs.clear();
@@ -284,5 +302,6 @@ final class ComonOtelFlutterInstrumentation {
     }
     OtelFlutterErrorHooks.clear();
     OtelFlutterBreadcrumbs.clear();
+    OtelFlutterErrorRateLimiter.reset();
   }
 }

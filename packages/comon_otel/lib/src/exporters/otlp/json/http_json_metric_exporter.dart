@@ -25,6 +25,7 @@ final class OtlpHttpJsonMetricExporter implements MetricExporter {
        _headers = _resolveHeaders(headers, compression),
        _timeout = timeout,
        _transport = transport ?? DefaultOtlpHttpTransport(),
+       _ownsTransport = transport == null,
        _compression = compression,
        _retry = retry;
 
@@ -33,6 +34,11 @@ final class OtlpHttpJsonMetricExporter implements MetricExporter {
   final Map<String, String> _headers;
   final Duration _timeout;
   final OtlpHttpTransport _transport;
+
+  /// Whether this exporter created [_transport] and so must release it. An
+  /// injected transport belongs to whoever injected it: it may be shared
+  /// with other exporters or a later SDK instance.
+  final bool _ownsTransport;
   final OtlpCompression _compression;
   final OtlpRetryConfig _retry;
 
@@ -73,6 +79,12 @@ final class OtlpHttpJsonMetricExporter implements MetricExporter {
   @override
   Future<void> forceFlush() async {}
 
+  /// Releases the transport only when this exporter created it; an injected
+  /// `transport` is left open for its owner to shut down.
   @override
-  Future<void> shutdown() => _transport.shutdown();
+  Future<void> shutdown() async {
+    if (_ownsTransport) {
+      await _transport.shutdown();
+    }
+  }
 }

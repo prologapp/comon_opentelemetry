@@ -4,10 +4,15 @@ final class _GatedSpanExporter implements SpanExporter {
   final List<int> batchSizes = <int>[];
   final Completer<void> gate = Completer<void>();
 
+  /// Ordem de export e teardown: `export-start`, `export-done`, `shutdown`.
+  final List<String> events = <String>[];
+
   @override
   Future<ExportResult> export(List<SpanData> spans) async {
     batchSizes.add(spans.length);
+    events.add('export-start');
     await gate.future;
+    events.add('export-done');
     return ExportResult.success;
   }
 
@@ -15,17 +20,24 @@ final class _GatedSpanExporter implements SpanExporter {
   Future<void> forceFlush() async {}
 
   @override
-  Future<void> shutdown() async {}
+  Future<void> shutdown() async {
+    events.add('shutdown');
+  }
 }
 
 final class _GatedLogExporter implements LogExporter {
   final List<int> batchSizes = <int>[];
   final Completer<void> gate = Completer<void>();
 
+  /// Ordem de export e teardown: `export-start`, `export-done`, `shutdown`.
+  final List<String> events = <String>[];
+
   @override
   Future<ExportResult> export(List<LogRecord> logs) async {
     batchSizes.add(logs.length);
+    events.add('export-start');
     await gate.future;
+    events.add('export-done');
     return ExportResult.success;
   }
 
@@ -33,7 +45,69 @@ final class _GatedLogExporter implements LogExporter {
   Future<void> forceFlush() async {}
 
   @override
-  Future<void> shutdown() async {}
+  Future<void> shutdown() async {
+    events.add('shutdown');
+  }
+}
+
+/// Exporter whose export ends at once but whose forceFlush and shutdown hang
+/// until their own gate opens: the teardown half of the flush budget.
+final class _StuckTeardownSpanExporter implements SpanExporter {
+  final Completer<void> forceFlushGate = Completer<void>();
+  final Completer<void> shutdownGate = Completer<void>();
+  int exported = 0;
+
+  /// Chamadas recebidas: o prazo estourado sozinho não prova que o
+  /// processador chegou a chamar o teardown do exporter.
+  int forceFlushCalls = 0;
+  int shutdownCalls = 0;
+
+  @override
+  Future<ExportResult> export(List<SpanData> spans) async {
+    exported += spans.length;
+    return ExportResult.success;
+  }
+
+  @override
+  Future<void> forceFlush() {
+    forceFlushCalls += 1;
+    return forceFlushGate.future;
+  }
+
+  @override
+  Future<void> shutdown() {
+    shutdownCalls += 1;
+    return shutdownGate.future;
+  }
+}
+
+/// Log counterpart of [_StuckTeardownSpanExporter].
+final class _StuckTeardownLogExporter implements LogExporter {
+  final Completer<void> forceFlushGate = Completer<void>();
+  final Completer<void> shutdownGate = Completer<void>();
+  int exported = 0;
+
+  /// Ver [_StuckTeardownSpanExporter.forceFlushCalls].
+  int forceFlushCalls = 0;
+  int shutdownCalls = 0;
+
+  @override
+  Future<ExportResult> export(List<LogRecord> logs) async {
+    exported += logs.length;
+    return ExportResult.success;
+  }
+
+  @override
+  Future<void> forceFlush() {
+    forceFlushCalls += 1;
+    return forceFlushGate.future;
+  }
+
+  @override
+  Future<void> shutdown() {
+    shutdownCalls += 1;
+    return shutdownGate.future;
+  }
 }
 
 void defineBatchProcessorHealthTests() {
@@ -312,6 +386,301 @@ void defineBatchProcessorHealthTests() {
       gated.gate.complete();
       await processor.shutdown();
       expect(gated.batchSizes.fold<int>(0, (a, b) => a + b), 2);
+    });
+  });
+
+  // forceFlush e shutdown esperam no máximo flushWaitLimit: um coletor que
+  // aceita e nunca responde segurava o chamador por 30 s (shutdown) e até
+  // 122 s (forceFlush com 1.536 spans = 12 exports seriais). O export em voo
+  // não é cancelado: só deixa de ser aguardado.
+  group('batch processor bounded flush', () {
+    const limit = Duration(milliseconds: 200);
+    const outer = Duration(seconds: 3);
+
+    void expectNearLimit(Duration elapsed) {
+      expect(elapsed, greaterThan(const Duration(milliseconds: 150)));
+      expect(elapsed, lessThan(const Duration(milliseconds: 1500)));
+    }
+
+    Tracer spanTracer(BatchSpanProcessor processor) => TracerProvider(
+      resource: Resource.empty(),
+      spanProcessors: <SpanProcessor>[processor],
+      sampler: const AlwaysOnSampler(),
+    ).getTracer('t');
+
+    OtelLogger logLogger(BatchLogProcessor processor) => LoggerProvider(
+      resource: Resource.empty(),
+      logProcessors: <LogProcessor>[processor],
+    ).getLogger('l');
+
+    test(
+      'span forceFlush returns near the limit with a stuck exporter',
+      () async {
+        final gated = _GatedSpanExporter();
+        final processor = BatchSpanProcessor(
+          exporter: gated,
+          scheduleDelay: const Duration(hours: 1),
+          flushWaitLimit: limit,
+        );
+        await spanTracer(processor).startSpan('stuck').end();
+
+        final stopwatch = Stopwatch()..start();
+        await processor.forceFlush().timeout(outer);
+        stopwatch.stop();
+
+        expectNearLimit(stopwatch.elapsed);
+        gated.gate.complete();
+        await processor.shutdown();
+      },
+    );
+
+    test(
+      'span shutdown returns near the limit with a stuck exporter',
+      () async {
+        final gated = _GatedSpanExporter();
+        final processor = BatchSpanProcessor(
+          exporter: gated,
+          scheduleDelay: const Duration(hours: 1),
+          flushWaitLimit: limit,
+        );
+        await spanTracer(processor).startSpan('stuck').end();
+
+        final stopwatch = Stopwatch()..start();
+        await processor.shutdown().timeout(outer);
+        stopwatch.stop();
+
+        expectNearLimit(stopwatch.elapsed);
+        gated.gate.complete();
+      },
+    );
+
+    test(
+      'log forceFlush returns near the limit with a stuck exporter',
+      () async {
+        final gated = _GatedLogExporter();
+        final processor = BatchLogProcessor(
+          exporter: gated,
+          scheduleDelay: const Duration(hours: 1),
+          flushWaitLimit: limit,
+        );
+        logLogger(processor).info('stuck');
+
+        final stopwatch = Stopwatch()..start();
+        await processor.forceFlush().timeout(outer);
+        stopwatch.stop();
+
+        expectNearLimit(stopwatch.elapsed);
+        gated.gate.complete();
+        await processor.shutdown();
+      },
+    );
+
+    test('log shutdown returns near the limit with a stuck exporter', () async {
+      final gated = _GatedLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: gated,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      logLogger(processor).info('stuck');
+
+      final stopwatch = Stopwatch()..start();
+      await processor.shutdown().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      gated.gate.complete();
+    });
+
+    // Cada forceFlush com o exporter travado enfileirava um ciclo `all` novo.
+    // Agora os chamadores compartilham o ciclo ainda não iniciado: no máximo
+    // um rodando e um na fila (o que leva o dado que chegou depois do início).
+    test('concurrent span forceFlush calls share one queued drain', () async {
+      final gated = _GatedSpanExporter();
+      final processor = BatchSpanProcessor(
+        exporter: gated,
+        maxBatchSize: 4,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: const Duration(milliseconds: 20),
+      );
+      final tracer = spanTracer(processor);
+      await tracer.startSpan('first').end();
+      await processor.forceFlush().timeout(outer);
+      expect(gated.batchSizes, <int>[1]);
+
+      // Arrives after the stuck drain started.
+      await tracer.startSpan('late').end();
+      await Future.wait(
+        List<Future<void>>.generate(10, (_) => processor.forceFlush()),
+      ).timeout(outer);
+      // Exactly the stuck drain plus one follow-up: 1 would mean the callers
+      // reused the drain already running (and could miss what arrived after
+      // it started); more would mean one cycle per call.
+      expect(processor.queuedFlushCount, 2);
+
+      gated.gate.complete();
+      await _waitFor(() => processor.queuedFlushCount == 0);
+      expect(gated.batchSizes.fold<int>(0, (a, b) => a + b), 2);
+      expect(processor.queueLength, 0);
+      await processor.shutdown();
+    });
+
+    test('concurrent log forceFlush calls share one queued drain', () async {
+      final gated = _GatedLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: gated,
+        maxBatchSize: 4,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: const Duration(milliseconds: 20),
+      );
+      final logger = logLogger(processor);
+      logger.info('first');
+      await processor.forceFlush().timeout(outer);
+      expect(gated.batchSizes, <int>[1]);
+
+      logger.info('late');
+      await Future.wait(
+        List<Future<void>>.generate(10, (_) => processor.forceFlush()),
+      ).timeout(outer);
+      // Exactly the stuck drain plus one follow-up: 1 would mean the callers
+      // reused the drain already running (and could miss what arrived after
+      // it started); more would mean one cycle per call.
+      expect(processor.queuedFlushCount, 2);
+
+      gated.gate.complete();
+      await _waitFor(() => processor.queuedFlushCount == 0);
+      expect(gated.batchSizes.fold<int>(0, (a, b) => a + b), 2);
+      expect(processor.queueLength, 0);
+      await processor.shutdown();
+    });
+
+    // O prazo cobre também o forceFlush/shutdown do próprio exporter, não só
+    // os exports: aqui o export termina na hora e o teardown trava.
+    test('span forceFlush returns near the limit when the exporter forceFlush '
+        'hangs', () async {
+      final stuck = _StuckTeardownSpanExporter();
+      final processor = BatchSpanProcessor(
+        exporter: stuck,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      await spanTracer(processor).startSpan('teardown').end();
+
+      final stopwatch = Stopwatch()..start();
+      await processor.forceFlush().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      expect(stuck.exported, 1);
+      expect(stuck.forceFlushCalls, 1);
+      stuck.forceFlushGate.complete();
+      stuck.shutdownGate.complete();
+      await processor.shutdown();
+    });
+
+    test('span shutdown returns near the limit when the exporter shutdown '
+        'hangs', () async {
+      final stuck = _StuckTeardownSpanExporter();
+      final processor = BatchSpanProcessor(
+        exporter: stuck,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      await spanTracer(processor).startSpan('teardown').end();
+
+      final stopwatch = Stopwatch()..start();
+      await processor.shutdown().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      expect(stuck.exported, 1);
+      expect(stuck.shutdownCalls, 1);
+      stuck.shutdownGate.complete();
+    });
+
+    test('log forceFlush returns near the limit when the exporter forceFlush '
+        'hangs', () async {
+      final stuck = _StuckTeardownLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: stuck,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      logLogger(processor).info('teardown');
+
+      final stopwatch = Stopwatch()..start();
+      await processor.forceFlush().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      expect(stuck.exported, 1);
+      expect(stuck.forceFlushCalls, 1);
+      stuck.forceFlushGate.complete();
+      stuck.shutdownGate.complete();
+      await processor.shutdown();
+    });
+
+    test('log shutdown returns near the limit when the exporter shutdown '
+        'hangs', () async {
+      final stuck = _StuckTeardownLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: stuck,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      logLogger(processor).info('teardown');
+
+      final stopwatch = Stopwatch()..start();
+      await processor.shutdown().timeout(outer);
+      stopwatch.stop();
+
+      expectNearLimit(stopwatch.elapsed);
+      expect(stuck.exported, 1);
+      expect(stuck.shutdownCalls, 1);
+      stuck.shutdownGate.complete();
+    });
+
+    test('a forceFlush that stopped waiting still exports the rest', () async {
+      final gated = _GatedSpanExporter();
+      final processor = BatchSpanProcessor(
+        exporter: gated,
+        maxBatchSize: 4,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      final tracer = spanTracer(processor);
+      for (var i = 0; i < 10; i++) {
+        await tracer.startSpan('rest-$i').end();
+      }
+
+      await processor.forceFlush().timeout(outer);
+      expect(gated.batchSizes, <int>[4]);
+
+      gated.gate.complete();
+      await _waitFor(() => processor.queueLength == 0);
+      await _waitFor(() => gated.events.last == 'export-done');
+
+      expect(gated.batchSizes, <int>[4, 4, 2]);
+      await processor.shutdown();
+    });
+
+    test('a shutdown that stopped waiting shuts the exporter down only after '
+        'the in-flight export ends', () async {
+      final gated = _GatedLogExporter();
+      final processor = BatchLogProcessor(
+        exporter: gated,
+        scheduleDelay: const Duration(hours: 1),
+        flushWaitLimit: limit,
+      );
+      logLogger(processor).info('in-flight');
+
+      await processor.shutdown().timeout(outer);
+      expect(gated.events, <String>['export-start']);
+
+      gated.gate.complete();
+      await _waitFor(() => gated.events.contains('shutdown'));
+
+      expect(gated.events, <String>['export-start', 'export-done', 'shutdown']);
     });
   });
 }

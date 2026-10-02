@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'errors/otel_flutter_error_hooks.dart';
+import 'errors/otel_flutter_error_rate_limiter.dart';
 import 'resource/otel_flutter_resource_types.dart';
 
 /// Clock source used by Flutter instrumentation components.
@@ -52,6 +53,8 @@ final class ComonOtelFlutterConfig {
     this.uiStallCheckInterval = const Duration(milliseconds: 50),
     this.uiStallThreshold = const Duration(milliseconds: 100),
     this.breadcrumbCapacity = 20,
+    this.maxErrorTelemetryPerGroupPerMinute =
+        OtelFlutterErrorRateLimiter.defaultMaxPerMinute,
     this.storageFreeMetricName = 'app.device.storage.free',
     this.batteryLevelMetricName = 'app.device.battery.level',
     this.batteryStateMetricName = 'app.device.battery.state',
@@ -202,6 +205,14 @@ final class ComonOtelFlutterConfig {
 
   /// Maximum number of breadcrumbs retained in memory.
   final int breadcrumbCapacity;
+
+  /// Maximum number of captured errors per `error.group.name` exported as a
+  /// span and a log per minute (default 5). Occurrences above it are only
+  /// counted in `flutter.error.suppressed.count`; the app's error fallback
+  /// and error hooks still run for every occurrence. `null` disables the
+  /// limit; a value below 1 makes `ComonOtelFlutter.install` throw an
+  /// [ArgumentError].
+  final int? maxErrorTelemetryPerGroupPerMinute;
 
   /// Metric name for the free storage milestone gauge.
   final String storageFreeMetricName;

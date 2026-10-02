@@ -1,6 +1,9 @@
+import '../core/attribute_value_limit.dart';
 import '../core/otel_session.dart';
 import '../core/resource.dart';
 import '../core/semantic_attributes.dart';
+import '../core/url_scrubber.dart';
+import 'log_limits.dart';
 import 'log_processor.dart';
 import 'log_record.dart';
 import 'otel_logger.dart';
@@ -11,10 +14,14 @@ final class LoggerProvider {
   LoggerProvider({
     required this.resource,
     required List<LogProcessor> logProcessors,
+    this.logLimits = const LogLimits(),
   }) : _logProcessors = List<LogProcessor>.unmodifiable(logProcessors);
 
   /// Resource attached to emitted log records.
   final Resource resource;
+
+  /// Limits applied to every emitted record.
+  final LogLimits logLimits;
   final List<LogProcessor> _logProcessors;
 
   /// Returns a logger with the given [name].
@@ -23,6 +30,14 @@ final class LoggerProvider {
   }
 
   /// Sends [record] through every configured log processor.
+  ///
+  /// The body and the exception text (`exception.message`,
+  /// `exception.stacktrace`) have their URLs reduced to scheme and host (see
+  /// [scrubUrls]), whichever path produced the record ([OtelLogger.error], a
+  /// log bridge, a raw [emit]) and whatever its severity: callers routinely
+  /// log `error.toString()` as the body. String attribute values and the
+  /// body are then cut to [logLimits] (see [attributeValueTruncationMarker]),
+  /// so the cut never keeps a path the scrub would have dropped.
   ///
   /// Every record is stamped with the isolate's `session.id` first. Log
   /// records are immutable value objects and [LogProcessor.onEmit] fans out
@@ -43,12 +58,16 @@ final class LoggerProvider {
       observedTimestamp: record.observedTimestamp,
       severity: record.severity,
       severityText: record.severityText,
-      body: record.body,
+      body: truncateValue(scrubUrls(record.body), logLimits.bodyLengthLimit),
       resource: record.resource,
       spanContext: record.spanContext,
       loggerName: record.loggerName,
       attributes: <String, Object>{
-        ...record.attributes,
+        for (final entry in record.attributes.entries)
+          entry.key: limitAttributeValue(
+            scrubExceptionAttribute(entry.key, entry.value),
+            logLimits.attributeValueLengthLimit,
+          ),
         SemanticAttributes.sessionId: OtelSession.id,
       },
     );

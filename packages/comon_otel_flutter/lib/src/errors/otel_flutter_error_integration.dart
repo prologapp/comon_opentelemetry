@@ -7,6 +7,7 @@ import '../comon_otel_flutter_instrumentation.dart';
 import '../navigation/otel_flutter_route_context.dart';
 import 'otel_flutter_breadcrumbs.dart';
 import 'otel_flutter_error_hooks.dart';
+import 'otel_flutter_error_rate_limiter.dart';
 
 /// Captures a framework error and forwards it into OpenTelemetry.
 ///
@@ -19,30 +20,22 @@ void recordFlutterFrameworkError(
   String loggerName = 'comon_otel.flutter',
   FlutterExceptionHandler? fallback,
 }) {
-  final attributes = _guardedAttributes(
-    () => _frameworkErrorAttributes(details),
-    source: 'framework',
-    error: details.exception,
-  );
   _guarded(() {
-    OtelFlutterErrorHooks.dispatchFrameworkError(
-      OtelFlutterErrorSnapshot(
-        source: 'framework',
-        error: details.exception,
-        stackTrace: details.stack,
-        attributes: Map<String, Object>.unmodifiable(attributes),
-        breadcrumbs: OtelFlutterBreadcrumbs.snapshot(),
-      ),
-    );
-  });
-  _guarded(() {
-    _recordErrorTelemetry(
+    _captureError(
       loggerName: loggerName,
+      source: 'framework',
       spanName: 'flutter.error',
       logBody: 'flutter.framework_error',
-      attributes: attributes,
       error: details.exception,
       stackTrace: details.stack,
+      groupName: () => _errorGroupName(
+        source: 'framework',
+        exception: details.exception,
+        context: details.context?.toDescription(),
+      ),
+      buildAttributes: (group) => _frameworkErrorAttributes(details, group),
+      hasHook: OtelFlutterErrorHooks.hasFrameworkErrorListener,
+      dispatchHook: OtelFlutterErrorHooks.dispatchFrameworkError,
       describe: details.exceptionAsString,
     );
   });
@@ -65,30 +58,19 @@ bool recordFlutterPlatformError(
   String loggerName = 'comon_otel.flutter',
   OtelPlatformErrorCallback? fallback,
 }) {
-  final attributes = _guardedAttributes(
-    () => _platformErrorAttributes(error),
-    source: 'platform_dispatcher',
-    error: error,
-  );
   _guarded(() {
-    OtelFlutterErrorHooks.dispatchPlatformError(
-      OtelFlutterErrorSnapshot(
-        source: 'platform_dispatcher',
-        error: error,
-        stackTrace: stackTrace,
-        attributes: Map<String, Object>.unmodifiable(attributes),
-        breadcrumbs: OtelFlutterBreadcrumbs.snapshot(),
-      ),
-    );
-  });
-  _guarded(() {
-    _recordErrorTelemetry(
+    _captureError(
       loggerName: loggerName,
+      source: 'platform_dispatcher',
       spanName: 'flutter.platform_error',
       logBody: 'flutter.platform_error',
-      attributes: attributes,
       error: error,
       stackTrace: stackTrace,
+      groupName: () =>
+          _errorGroupName(source: 'platform_dispatcher', exception: error),
+      buildAttributes: (group) => _platformErrorAttributes(error, group),
+      hasHook: OtelFlutterErrorHooks.hasPlatformErrorListener,
+      dispatchHook: OtelFlutterErrorHooks.dispatchPlatformError,
       describe: error.toString,
     );
   });
@@ -97,6 +79,93 @@ bool recordFlutterPlatformError(
   // Sentry or the app's own handler) can claim it. Without one, return false
   // so the engine keeps its default reporting.
   return fallback?.call(error, stackTrace) ?? false;
+}
+
+/// Decide o limitador antes de montar os atributos: a montagem (toString,
+/// diagnostics, breadcrumbs, scrub de cada string) é a parte cara, e um erro
+/// em loop pagaria por ela em toda ocorrência suprimida.
+///
+/// O grupo sai só de fonte, tipo e contexto ([groupName]), sem toString. Os
+/// atributos completos só são montados quando a ocorrência vai ser exportada
+/// ou quando há hook configurado para a fonte (o snapshot do hook carrega os
+/// atributos, e o hook roda em toda ocorrência).
+void _captureError({
+  required String loggerName,
+  required String source,
+  required String spanName,
+  required String logBody,
+  required Object error,
+  required StackTrace? stackTrace,
+  required String Function() groupName,
+  required Map<String, Object> Function(String group) buildAttributes,
+  required bool hasHook,
+  required void Function(OtelFlutterErrorSnapshot snapshot) dispatchHook,
+  required String Function() describe,
+}) {
+  final group = _guardedGroupName(groupName, source: source, error: error);
+
+  var export = false;
+  _guarded(() {
+    // Sem SDK não há o que exportar: não consome cota do grupo.
+    if (!Otel.isInitialized) {
+      return;
+    }
+    export = OtelFlutterErrorRateLimiter.tryAcquire(group);
+    if (!export) {
+      _countSuppressed(loggerName, source);
+    }
+  });
+
+  if (!export && !hasHook) {
+    return;
+  }
+
+  final attributes = _guardedAttributes(
+    () => buildAttributes(group),
+    source: source,
+    error: error,
+  );
+  if (hasHook) {
+    _guarded(() {
+      dispatchHook(
+        OtelFlutterErrorSnapshot(
+          source: source,
+          error: error,
+          stackTrace: stackTrace,
+          attributes: Map<String, Object>.unmodifiable(attributes),
+          breadcrumbs: OtelFlutterBreadcrumbs.snapshot(),
+        ),
+      );
+    });
+  }
+  if (export) {
+    _guarded(() {
+      _recordErrorTelemetry(
+        loggerName: loggerName,
+        spanName: spanName,
+        logBody: logBody,
+        attributes: attributes,
+        error: error,
+        stackTrace: stackTrace,
+        describe: describe,
+      );
+    });
+  }
+}
+
+/// Nome do grupo do erro com as URLs reduzidas a esquema e host (o mesmo
+/// valor exportado em `error.group.name`). Se montá-lo lançar, cai em
+/// `<source>:<tipo>`.
+String _guardedGroupName(
+  String Function() build, {
+  required String source,
+  required Object error,
+}) {
+  try {
+    return scrubUrls(build());
+  } catch (_) {
+    return '$source:${error.runtimeType}';
+  }
 }
 
 void _guarded(void Function() body) {
@@ -109,13 +178,24 @@ void _guarded(void Function() body) {
 
 /// Builds the full attribute set, degrading to a minimal one when building
 /// it throws (e.g. a throwing toString or informationCollector).
+///
+/// Every string value has its URLs reduced to scheme and host
+/// ([scrubUrls]): the exception message, context, diagnostics (e.g.
+/// `NetworkImage("<url>")`), breadcrumbs and group name may all embed a full
+/// URL with PII in the path or a signature in the query.
 Map<String, Object> _guardedAttributes(
   Map<String, Object> Function() build, {
   required String source,
   required Object error,
 }) {
   try {
-    return build();
+    return <String, Object>{
+      for (final entry in build().entries)
+        entry.key: switch (entry.value) {
+          final String text => scrubUrls(text),
+          final value => value,
+        },
+    };
   } catch (_) {
     return <String, Object>{
       'flutter.error.source': source,
@@ -124,6 +204,38 @@ Map<String, Object> _guardedAttributes(
   }
 }
 
+/// Name of the counter of error occurrences not exported because their
+/// group exceeded [OtelFlutterErrorRateLimiter.maxPerMinute], or because the
+/// group is new while [OtelFlutterErrorRateLimiter.maxTrackedGroups] windows
+/// are active.
+const String _suppressedCountMetricName = 'flutter.error.suppressed.count';
+
+Otel? _suppressedCounterOwner;
+Counter<int>? _suppressedCounter;
+
+/// Counts one suppressed occurrence, labeled only with the closed-set
+/// `flutter.error.source` (never the high-cardinality group name).
+void _countSuppressed(String loggerName, String source) {
+  final otel = Otel.instance;
+  if (!identical(otel, _suppressedCounterOwner)) {
+    _suppressedCounterOwner = otel;
+    _suppressedCounter = otel.meterProvider
+        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .createIntCounter(
+          _suppressedCountMetricName,
+          description:
+              'Captured errors not exported as span and log because their '
+              'error.group.name exceeded the per-minute limit or the table '
+              'of tracked groups was full.',
+        );
+  }
+  _suppressedCounter!.add(
+    1,
+    attributes: <String, Object>{'flutter.error.source': source},
+  );
+}
+
+/// Exporta o span e o log de uma ocorrência já liberada pelo limitador.
 void _recordErrorTelemetry({
   required String loggerName,
   required String spanName,
@@ -165,17 +277,16 @@ void _recordErrorTelemetry({
       );
 }
 
-Map<String, Object> _frameworkErrorAttributes(FlutterErrorDetails details) {
+Map<String, Object> _frameworkErrorAttributes(
+  FlutterErrorDetails details,
+  String group,
+) {
   final exception = details.exception;
   final attributes = <String, Object>{
     'flutter.error.source': 'framework',
     SemanticAttributes.exceptionType: exception.runtimeType.toString(),
     SemanticAttributes.exceptionMessage: exception.toString(),
-    'error.group.name': _errorGroupName(
-      source: 'framework',
-      exception: exception,
-      context: details.context?.toDescription(),
-    ),
+    'error.group.name': group,
   };
 
   if (details.library != null) {
@@ -196,15 +307,12 @@ Map<String, Object> _frameworkErrorAttributes(FlutterErrorDetails details) {
   return attributes;
 }
 
-Map<String, Object> _platformErrorAttributes(Object error) {
+Map<String, Object> _platformErrorAttributes(Object error, String group) {
   final attributes = <String, Object>{
     'flutter.error.source': 'platform_dispatcher',
     SemanticAttributes.exceptionType: error.runtimeType.toString(),
     SemanticAttributes.exceptionMessage: error.toString(),
-    'error.group.name': _errorGroupName(
-      source: 'platform_dispatcher',
-      exception: error,
-    ),
+    'error.group.name': group,
   };
 
   _applyRouteContext(attributes);

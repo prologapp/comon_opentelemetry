@@ -205,7 +205,7 @@ expect(helper.spanExporter.lastSpanNamed('test-operation'), isNotNull);
 expect(helper.logExporter.logs.single.body, 'inside test');
 ```
 
-`Otel.forceFlush()` now waits for in-flight simple span and log exports in addition to batch processors and metric readers.
+`Otel.forceFlush()` now waits for in-flight simple span and log exports in addition to batch processors and metric readers. `BatchSpanProcessor` and `BatchLogProcessor` hold the caller of `forceFlush()`/`shutdown()` for at most `flushWaitLimit` (default 2 s); past it the flush keeps running in the background, without cancelling the in-flight export.
 
 Collector-backed integration coverage is also available:
 

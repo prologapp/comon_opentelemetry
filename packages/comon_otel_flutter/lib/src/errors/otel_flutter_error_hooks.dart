@@ -54,6 +54,15 @@ final class OtelFlutterErrorHooks {
     _platformErrorListener = platformErrorListener;
   }
 
+  /// Se há listener de erro de framework configurado. A captura de erro usa
+  /// isto para montar os atributos de uma ocorrência suprimida pelo
+  /// limitador só quando alguém vai recebê-los.
+  static bool get hasFrameworkErrorListener => _frameworkErrorListener != null;
+
+  /// Se há listener de erro do platform dispatcher configurado. Ver
+  /// [hasFrameworkErrorListener].
+  static bool get hasPlatformErrorListener => _platformErrorListener != null;
+
   /// Dispatches a breadcrumb to the configured listener.
   static void dispatchBreadcrumb(OtelFlutterBreadcrumbEntry entry) {
     final listener = _breadcrumbListener;

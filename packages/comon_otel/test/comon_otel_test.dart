@@ -22,6 +22,8 @@ part 'src/session_tests.dart';
 part 'src/metric_aggregation_tests.dart';
 part 'src/export_resilience_tests.dart';
 part 'src/id_generation_tests.dart';
+part 'src/error_scrub_tests.dart';
+part 'src/value_length_limit_tests.dart';
 
 late InMemorySpanExporter exporter;
 late InMemoryMetricExporter metricExporter;
@@ -62,5 +64,7 @@ void main() {
     defineMetricAggregationTests();
     defineExportResilienceTests();
     defineIdGenerationTests();
+    defineErrorScrubTests();
+    defineValueLengthLimitTests();
   });
 }
