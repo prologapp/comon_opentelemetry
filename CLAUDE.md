@@ -37,7 +37,7 @@ fvm dart run melos bootstrap
 
 **Suítes canônicas (o que o CI roda):** `fvm dart run melos run analyze` e `fvm dart run melos run test` (= `test:dart` + `test:flutter`). Há um teste de retry/transport OTLP no core que ocasionalmente trava ~15min sob carga — se um único teste de transport pendurar, rode isolado; é pré-existente.
 
-**Totais históricos (medidos no HEAD de `fix/mobile-readiness-blockers`, antes do fluxo de release; não remedidos no `dev`):** core 101 · dio 13 · flutter 30 · analyze limpo. Não use como gabarito: rode `melos run test`.
+**Totais históricos (medidos no HEAD de `fix/mobile-readiness-blockers`, antes do fluxo de release; não remedidos no `dev`):** core 101 · dio 13 · flutter 30 · analyze limpo. Não use como gabarito: rode `fvm dart run melos run test`.
 
 ## Branches, PRs e release
 
