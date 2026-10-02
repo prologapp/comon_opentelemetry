@@ -37,7 +37,18 @@ fvm dart run melos bootstrap
 
 **Suítes canônicas (o que o CI roda):** `fvm dart run melos run analyze` e `fvm dart run melos run test` (= `test:dart` + `test:flutter`). Há um teste de retry/transport OTLP no core que ocasionalmente trava ~15min sob carga — se um único teste de transport pendurar, rode isolado; é pré-existente.
 
-**Totais de referência (HEAD de `fix/mobile-readiness-blockers`, via `melos run test`):** core 101 · dio 13 · flutter 30 · analyze limpo.
+**Totais históricos (medidos no HEAD de `fix/mobile-readiness-blockers`, antes do fluxo de release; não remedidos no `dev`):** core 101 · dio 13 · flutter 30 · analyze limpo. Não use como gabarito: rode `melos run test`.
+
+## Branches, PRs e release
+
+Fluxo completo e mecânica em [`docs/RELEASING.md`](docs/RELEASING.md) (não duplicado aqui).
+
+- **Base dos PRs é `dev`** (`fix/*`, `feat/*`). A `main` só recebe release e hotfix; o Spark não revisa PR para `main`.
+- **Merge commit sempre** ("Create a merge commit"). Nunca squash nem rebase: quebra a ancestralidade da tag e o CHANGELOG.
+- **Commits convencionais** (`type(scope): description`, em inglês). Eles geram o `CHANGELOG.md`; use `!` ou o footer `BREAKING CHANGE:` para quebra. Não edite `CHANGELOG.md` nem versão à mão em PR de feature.
+- **Release só pelo `tool/release.sh`** (`prepare`, `tag`, `back-merge`, `pin-snippet`). Não crie tag nem bump manual. Os pacotes não são publicados no pub.dev (`publish_to: none`).
+- **Nunca mover nem apagar tag `v*`.** Ela é imutável; erro em release se corrige com nova versão (ver Rollback no RELEASING.md).
+- **O app (PrologFlutter) pina pelo SHA completo (40 caracteres) do commit da tag**, não pelo nome da tag, nem por branch, nem por SHA curto. O bloco pronto sai de `tool/release.sh pin-snippet X.Y.Z`.
 
 ## Impacto no app consumidor
 
