@@ -1,8 +1,18 @@
 import 'semantic_attributes.dart';
 
 /// Matches `scheme://authority` plus everything after it up to the next
-/// whitespace or quote. Over-consuming trailing text is safe (it is dropped);
+/// whitespace, quote, `<`, `>` or backtick — including a JSON-escaped quote
+/// (`\"`). Over-consuming trailing text is safe (it is dropped);
 /// under-consuming would leak path or query.
+///
+/// No resto (grupo 3) a barra invertida só entra em par com o caractere
+/// seguinte (`\/`, `\\`, `\u…`), e nunca quando esse caractere encerraria a
+/// URL. Assim um `\"` fecha a URL e sobrevive ao scrub — corpo de log e
+/// atributo com JSON serializado continuam JSON válido —, um `\\` antes da
+/// aspa de fechamento é consumido inteiro (a aspa não vira escapada) e a
+/// barra escapada por encoders que escapam `/` continua descartada com o
+/// path. Cada passo do grupo 3 é decidido pelo primeiro caractere, então o
+/// casamento segue linear.
 ///
 /// O esquema é limitado a 32 caracteres: sem limite, uma sequência longa de
 /// `[A-Za-z0-9+.-]` que não termina em `://` faz cada posição inicial varrer
@@ -10,7 +20,8 @@ import 'semantic_attributes.dart';
 /// corte de 4 KiB). Com o limite, um esquema maior que 32 caracteres casa só
 /// nos últimos 32; path e query continuam descartados.
 final RegExp _urlPattern = RegExp(
-  r'''([A-Za-z][A-Za-z0-9+.\-]{0,31})://([^\s/?#"'<>`\\]*)([^\s"'<>`]*)''',
+  r'''([A-Za-z][A-Za-z0-9+.\-]{0,31})://([^\s/?#"'<>`\\]*)'''
+  r'''((?:[^\s"'<>`\\]|\\[^\s"'<>`])*)''',
 );
 
 /// Replaces every URL in [text] with its scheme and host only.
@@ -21,6 +32,10 @@ final RegExp _urlPattern = RegExp(
 /// query), userinfo is dropped, and the port is kept. A bare origin is left
 /// as is. Strings without `://` (e.g. `package:` and `dart:` stack frames)
 /// are returned unchanged. The function is idempotent.
+///
+/// Limite: só `://` literal abre uma URL. Texto em que o próprio separador
+/// vem escapado (`https:\/\/h.com\/cpf`, de encoders que escapam `/` em
+/// tudo) passa sem scrub; o `jsonEncode` do `dart:convert` não escapa `/`.
 ///
 /// Error text (exception messages, stack traces, status descriptions,
 /// diagnostics) must pass through this before it is recorded as telemetry.
