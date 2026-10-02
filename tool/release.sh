@@ -31,6 +31,10 @@
 # mapfile, no ${var,,}; files are rewritten via temp file + mv (no sed -i).
 
 set -euo pipefail
+# No pathname expansion: git pathspecs such as 'pkg/lib/*.dart' are passed
+# unquoted and must reach git verbatim (the shell would expand them to the
+# top-level lib files only and silently skip lib/src).
+set -f
 if [ -n "${RELEASE_TRACE:-}" ]; then set -x; fi
 
 REMOTE="${RELEASE_REMOTE:-origin}"
@@ -554,6 +558,10 @@ cmd_prepare() {
 
   local n_old
   n_old="$(lib_literal_count_at "$base_sha" "$current")"
+  # The SDK reports its version in telemetry, so lib/ always carries at least
+  # one literal. Zero means the search is broken, not that there is nothing
+  # to bump: refuse instead of passing vacuously.
+  [ "$n_old" -gt 0 ] || die "nenhum literal '$current' encontrado em lib/ em $dev_ref; a busca de literais está quebrada (ou a versão sumiu do código)"
   info "release $tag a partir de $dev_ref @ $(git rev-parse --short "$base_sha"): $current -> $version ($n_old literais em lib/)"
 
   run_gates

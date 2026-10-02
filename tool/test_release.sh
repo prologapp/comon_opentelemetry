@@ -140,6 +140,10 @@ name: core
 version: 0.0.1-alpha.1
 resolution: workspace
 EOF
+# A top-level lib file WITHOUT literals next to lib/src files WITH them: an
+# unquoted 'lib/*.dart' pathspec would be glob-expanded by the shell to this
+# file only and silently miss lib/src (bug caught on the real repo).
+echo "export 'src/v.dart';" >"$W/packages/core/lib/core.dart"
 cat >"$W/packages/core/lib/src/v.dart" <<'EOF'
 const ua = 'X-Agent/0.0.1-alpha.1';
 const sdk = {'sdk.version': '0.0.1-alpha.1'};
