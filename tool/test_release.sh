@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for tool/release.sh. No bats: plain bash, a throwaway git repo with a
-# bare "origin" under $TMPDIR, and a gh stub. Every refusal is paired with a
+# bare "origin" under $TMPDIR, a gh stub and dart/flutter stubs under a fake
+# HOME (for the real gates path). Every refusal is paired with a
 # positive control (same call, condition removed, succeeds) and is matched on
 # its specific message, so a script that dies for an unrelated reason (syntax,
 # missing tool) does not count as a correct refusal.
@@ -56,6 +57,24 @@ echo "gh stub: chamada inesperada: $*" >&2
 exit 3
 EOF
 chmod +x "$T/bin/gh"
+
+# ---------------------------------------------------------------- dart/flutter stubs
+# release.sh resolves the pinned SDK as $HOME/fvm/versions/<.fvmrc>/bin/<tool>
+# (never via PATH or the fvm wrapper), so the stubs live under a fake HOME:
+# that exercises the .fvmrc lookup too. Each call is logged as
+# "<tool> <physical cwd> <args>"; GATE_STUB_FAIL="<cwd suffix> <args>" fails it.
+SDK_BIN="$T/home/fvm/versions/3.38.9/bin"
+mkdir -p "$SDK_BIN" "$T/emptyhome"
+cat >"$SDK_BIN/dart" <<'EOF'
+#!/usr/bin/env bash
+line="$(basename "$0") $(pwd -P) $*"
+echo "$line" >>"$GH_STUB_DIR/sdk_calls.log"
+case "$line" in *"/${GATE_STUB_FAIL:-<none>}") echo "stub: falha injetada" >&2; exit 1 ;; esac
+exit 0
+EOF
+cp "$SDK_BIN/dart" "$SDK_BIN/flutter"
+chmod +x "$SDK_BIN/dart" "$SDK_BIN/flutter"
+unset DART_BIN FLUTTER_BIN
 
 export GH_STUB_DIR="$STUB"
 export GH_BIN="$T/bin/gh"
@@ -154,6 +173,8 @@ name: leaf
 version: 0.0.1-alpha.1
 resolution: workspace
 dependencies:
+  flutter:
+    sdk: flutter
   core:
     path: ../core
 EOF
@@ -256,6 +277,27 @@ RELEASE_GATES_CMD=false expect_fail "gate falhando aborta" "gate 'RELEASE_GATES_
 expect_fail "--skip-gates sem --dry-run é recusado" "só é aceito com --dry-run" prepare 0.1.0 --skip-gates
 RELEASE_GATES_CMD="" expect_ok "--skip-gates no dry-run passa" prepare 0.1.0 --dry-run --skip-gates
 expect_out "--skip-gates é avisado em voz alta" "GATES PULADOS"
+
+echo "== gates reais (sem RELEASE_GATES_CMD, SDK pinado pelo .fvmrc)"
+WP="$(cd "$W" && pwd -P)"
+: >"$STUB/sdk_calls.log"
+RELEASE_GATES_CMD="" HOME="$T/home" expect_ok "gates reais com o SDK stub passam" prepare 0.1.0 --dry-run
+expect_out "usa o binário pinado do .fvmrc" "gates locais (dart: $SDK_BIN/dart)"
+sdk_called() { # sdk_called <name> <exact log line>
+  if grep -qxF -- "$2" "$STUB/sdk_calls.log"; then ok "$1"
+  else ko "$1 (faltou: $2; chamadas: $(tr '\n' ';' <"$STUB/sdk_calls.log"))"; fi
+}
+sdk_called "pub get na raiz" "dart $WP pub get"
+sdk_called "analyze do core" "dart $WP/packages/core analyze ."
+sdk_called "analyze do leaf" "dart $WP/packages/leaf analyze ."
+sdk_called "core (Dart puro): dart test sem integração" "dart $WP/packages/core test --exclude-tags integration"
+sdk_called "leaf (Flutter): flutter test" "flutter $WP/packages/leaf test"
+if grep -qF -- "dart $WP/packages/leaf test" "$STUB/sdk_calls.log"; then ko "pacote Flutter rodou dart test"; else ok "pacote Flutter não roda dart test"; fi
+if grep -qF -- "--tags integration" "$STUB/sdk_calls.log"; then ko "integração rodou sem --with-integration"; else ok "integração não roda sem --with-integration"; fi
+RELEASE_GATES_CMD="" HOME="$T/home" GATE_STUB_FAIL="packages/leaf analyze ." \
+  expect_fail "gate real falhando aborta" "gate 'analyze packages/leaf' falhou" prepare 0.1.0 --dry-run
+RELEASE_GATES_CMD="" HOME="$T/emptyhome" \
+  expect_fail "recusa sem o SDK pinado instalado" "3.38.9/bin/dart não existe; rode 'fvm install 3.38.9'" prepare 0.1.0 --dry-run
 
 echo "== pin-snippet antes da tag"
 expect_fail "pin-snippet recusa sem tag" "a tag v0.1.0 não existe" pin-snippet 0.1.0

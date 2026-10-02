@@ -309,10 +309,17 @@ de `gh`, e passa pelo fluxo completo:
 - cada recusa, com controle positivo e negativo e asserção da mensagem;
 - dry-run sem efeito em refs, HEAD e status;
 - geração do CHANGELOG;
+- gates reais com SDK stub;
 - prepare real;
 - tag;
 - hotfix;
 - back-merge e release seguinte;
 - `pin-snippet`.
 
-Os gates de Dart são substituídos por `RELEASE_GATES_CMD`.
+A maior parte do fluxo roda com os gates substituídos por `RELEASE_GATES_CMD`. O
+caminho real dos gates também é coberto: com `RELEASE_GATES_CMD` vazio e um `HOME`
+falso, o `release.sh` resolve o SDK pinado pelo `.fvmrc` em
+`$HOME/fvm/versions/<versão>/bin/`, onde ficam stubs de `dart` e `flutter` que
+registram diretório e argumentos de cada chamada. O teste confere `pub get`, `analyze`
+e o comando de teste certo por pacote (Dart puro ou Flutter), a falha de um gate e a
+falta do SDK pinado. Nenhum `dart` de verdade roda.
