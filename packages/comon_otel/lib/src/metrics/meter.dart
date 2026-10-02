@@ -1,3 +1,5 @@
+import 'package:meta/meta.dart';
+
 import '../core/instrumentation_scope.dart';
 import '../core/resource.dart';
 import 'instruments/counter.dart';
@@ -83,6 +85,9 @@ final class Meter {
   /// Instrumentation scope reported on emitted metric data.
   final InstrumentationScope scope;
 
+  int get _metricCardinalityLimit =>
+      _resolveMetricCardinalityLimit(_provider.metricCardinalityLimit);
+
   /// Name of the current instrumentation scope.
   String get name => scope.name;
 
@@ -108,6 +113,7 @@ final class Meter {
       description: description,
       instrumentType: MetricInstrumentType.counter,
       allowNegative: false,
+      metricCardinalityLimit: _metricCardinalityLimit,
     );
     _provider.registerMetric(instrument);
     return instrument;
@@ -126,6 +132,7 @@ final class Meter {
       description: description,
       instrumentType: MetricInstrumentType.counter,
       allowNegative: false,
+      metricCardinalityLimit: _metricCardinalityLimit,
     );
     _provider.registerMetric(instrument);
     return instrument;
@@ -144,6 +151,7 @@ final class Meter {
       description: description,
       instrumentType: MetricInstrumentType.upDownCounter,
       allowNegative: true,
+      metricCardinalityLimit: _metricCardinalityLimit,
     );
     _provider.registerMetric(instrument);
     return instrument;
@@ -162,6 +170,7 @@ final class Meter {
       unit: unit,
       description: description,
       boundaries: boundaries,
+      metricCardinalityLimit: _metricCardinalityLimit,
     );
     _provider.registerMetric(instrument);
     return instrument;
@@ -234,18 +243,59 @@ final class ObservableResult<T extends num> {
   }
 }
 
-final class _Measurement<T extends num> {
-  const _Measurement({
-    required this.value,
-    required this.timestamp,
-    this.attributes,
-    this.startTimestamp,
-  });
+/// Number of entries a synchronous instrument keeps in memory (series,
+/// retained attribute sets and histogram bucket slots). Test-only: lets
+/// tests assert that retention is bounded by the number of series, not by
+/// the number of measurements. Any new per-instrument store must be counted
+/// here.
+@visibleForTesting
+int debugRetainedEntryCount(Object instrument) {
+  return switch (instrument) {
+    _CounterMetric<num>() => instrument._retainedEntryCount,
+    _HistogramMetric<num>() => instrument._retainedEntryCount,
+    _ => throw ArgumentError.value(
+      instrument,
+      'instrument',
+      'Not a synchronous counter or histogram.',
+    ),
+  };
+}
 
-  final T value;
-  final DateTime timestamp;
-  final Map<String, Object>? attributes;
-  final DateTime? startTimestamp;
+/// Resolves the provider's cardinality limit the same way
+/// [MeterProvider.collectAll] does (non-positive falls back to 2000).
+int _resolveMetricCardinalityLimit(int limit) => limit > 0 ? limit : 2000;
+
+/// Running cumulative sum of one attribute set of a counter.
+final class _SumSeries {
+  _SumSeries({
+    required this.attributes,
+    required this.sum,
+    required this.startTimestamp,
+  }) : timestamp = startTimestamp;
+
+  final Map<String, Object> attributes;
+  num sum;
+  final DateTime startTimestamp;
+  DateTime timestamp;
+}
+
+/// Running cumulative distribution of one attribute set of a histogram.
+final class _HistogramSeries {
+  _HistogramSeries({
+    required this.attributes,
+    required int bucketCount,
+    required this.startTimestamp,
+  }) : timestamp = startTimestamp,
+       bucketCounts = List<int>.filled(bucketCount, 0);
+
+  final Map<String, Object> attributes;
+  final List<int> bucketCounts;
+  final DateTime startTimestamp;
+  DateTime timestamp;
+  int count = 0;
+  double sum = 0;
+  double min = 0;
+  double max = 0;
 }
 
 final class _CounterMetric<T extends num>
@@ -255,6 +305,7 @@ final class _CounterMetric<T extends num>
     required this.name,
     required this.instrumentType,
     required this.allowNegative,
+    required this.metricCardinalityLimit,
     this.unit,
     this.description,
   });
@@ -265,54 +316,52 @@ final class _CounterMetric<T extends num>
   final String? description;
   final MetricInstrumentType instrumentType;
   final bool allowNegative;
-  final List<_Measurement<T>> _measurements = <_Measurement<T>>[];
+
+  /// Maximum number of distinct attribute sets kept by this instrument.
+  final int metricCardinalityLimit;
+
+  // Aggregated at record time: memory and collect cost are O(series), not
+  // O(measurements). Insertion order = first-seen order of each series.
+  final Map<_AttributeSetKey, _SumSeries> _series =
+      <_AttributeSetKey, _SumSeries>{};
   final Map<_AttributeSetKey, Map<String, Object>> _retainedAttributeSets =
       <_AttributeSetKey, Map<String, Object>>{};
 
+  int get _retainedEntryCount => _series.length + _retainedAttributeSets.length;
+
   @override
   void add(T value, {Map<String, Object>? attributes}) {
+    // NaN/Infinity would poison the cumulative sum for the rest of the
+    // process (and cannot be represented as a JSON number): drop it.
+    if (!value.isFinite) {
+      return;
+    }
     if (!allowNegative && value < 0) {
       throw ArgumentError.value(value, 'value', 'Counter values must be >= 0.');
     }
-    _measurements.add(
-      _Measurement<T>(
-        value: value,
-        timestamp: DateTime.now().toUtc(),
-        attributes: _normalizeMetricAttributes(attributes),
-      ),
+    final now = DateTime.now().toUtc();
+    final resolvedAttributes = _resolveRetainedAttributes(
+      attributes: _normalizeMetricAttributes(attributes),
+      retainedAttributeSets: _retainedAttributeSets,
+      metricCardinalityLimit: metricCardinalityLimit,
     );
+    final key = _AttributeSetKey(resolvedAttributes);
+    final series = _series[key];
+    if (series == null) {
+      _series[key] = _SumSeries(
+        attributes: resolvedAttributes,
+        sum: value,
+        startTimestamp: now,
+      );
+      return;
+    }
+    series
+      ..sum = series.sum + value
+      ..timestamp = now;
   }
 
   @override
   MetricData collect(Resource resource, {required int metricCardinalityLimit}) {
-    final aggregated = <_AttributeSetKey, _Measurement<num>>{};
-
-    for (final measurement in _measurements) {
-      final attributes = _resolveRetainedAttributes(
-        attributes: measurement.attributes ?? const <String, Object>{},
-        retainedAttributeSets: _retainedAttributeSets,
-        metricCardinalityLimit: metricCardinalityLimit,
-      );
-      final key = _AttributeSetKey(attributes);
-      final existing = aggregated[key];
-      if (existing == null) {
-        aggregated[key] = _Measurement<num>(
-          value: measurement.value,
-          timestamp: measurement.timestamp,
-          startTimestamp: measurement.timestamp,
-          attributes: attributes,
-        );
-        continue;
-      }
-
-      aggregated[key] = _Measurement<num>(
-        value: existing.value + measurement.value,
-        timestamp: measurement.timestamp,
-        startTimestamp: existing.startTimestamp ?? existing.timestamp,
-        attributes: attributes,
-      );
-    }
-
     return MetricData(
       name: name,
       description: description,
@@ -322,13 +371,13 @@ final class _CounterMetric<T extends num>
       scope: scope,
       aggregationTemporality: AggregationTemporality.cumulative,
       isMonotonic: !allowNegative,
-      points: aggregated.values
+      points: _series.values
           .map(
-            (measurement) => MetricPoint(
-              value: measurement.value,
-              timestamp: measurement.timestamp,
-              startTimestamp: measurement.startTimestamp,
-              attributes: measurement.attributes ?? const <String, Object>{},
+            (series) => MetricPoint(
+              value: series.sum,
+              timestamp: series.timestamp,
+              startTimestamp: series.startTimestamp,
+              attributes: series.attributes,
             ),
           )
           .toList(growable: false),
@@ -341,53 +390,91 @@ final class _HistogramMetric<T extends num>
   _HistogramMetric({
     required this.scope,
     required this.name,
+    required this.metricCardinalityLimit,
     this.unit,
     this.description,
-    this.boundaries,
-  });
+    List<double>? boundaries,
+  }) : explicitBounds = List<double>.unmodifiable(
+         boundaries ?? const <double>[],
+       );
 
   final InstrumentationScope scope;
   final String name;
   final String? unit;
   final String? description;
-  final List<double>? boundaries;
-  final List<_Measurement<T>> _measurements = <_Measurement<T>>[];
+
+  /// Bucket bounds, copied at creation: the caller may keep mutating the
+  /// list it passed, but the bucket layout of a cumulative series must
+  /// never change after its first measurement.
+  final List<double> explicitBounds;
+
+  /// Maximum number of distinct attribute sets kept by this instrument.
+  final int metricCardinalityLimit;
+
+  // Aggregated at record time: memory and collect cost are O(series), not
+  // O(measurements). Insertion order = first-seen order of each series.
+  final Map<_AttributeSetKey, _HistogramSeries> _series =
+      <_AttributeSetKey, _HistogramSeries>{};
   final Map<_AttributeSetKey, Map<String, Object>> _retainedAttributeSets =
       <_AttributeSetKey, Map<String, Object>>{};
 
+  int get _retainedEntryCount =>
+      _series.length +
+      _retainedAttributeSets.length +
+      _series.values.fold<int>(
+        0,
+        (total, series) => total + series.bucketCounts.length,
+      );
+
   @override
   void record(T value, {Map<String, Object>? attributes}) {
-    _measurements.add(
-      _Measurement<T>(
-        value: value,
-        timestamp: DateTime.now().toUtc(),
-        attributes: _normalizeMetricAttributes(attributes),
+    // NaN/Infinity would poison sum/min/max for the rest of the process (and
+    // cannot be represented as a JSON number): drop the measurement.
+    if (!value.isFinite) {
+      return;
+    }
+    final now = DateTime.now().toUtc();
+    final resolvedAttributes = _resolveRetainedAttributes(
+      attributes: _normalizeMetricAttributes(attributes),
+      retainedAttributeSets: _retainedAttributeSets,
+      metricCardinalityLimit: metricCardinalityLimit,
+    );
+    final series = _series.putIfAbsent(
+      _AttributeSetKey(resolvedAttributes),
+      () => _HistogramSeries(
+        attributes: resolvedAttributes,
+        bucketCount: explicitBounds.length + 1,
+        startTimestamp: now,
       ),
     );
+
+    final doubleValue = value.toDouble();
+    if (series.count == 0) {
+      series
+        ..min = doubleValue
+        ..max = doubleValue;
+    } else {
+      series
+        ..min = series.min < doubleValue ? series.min : doubleValue
+        ..max = series.max > doubleValue ? series.max : doubleValue;
+    }
+    series
+      ..count += 1
+      ..sum += doubleValue
+      ..timestamp = now;
+
+    var index = explicitBounds.length;
+    for (var boundIndex = 0; boundIndex < explicitBounds.length; boundIndex++) {
+      if (doubleValue <= explicitBounds[boundIndex]) {
+        index = boundIndex;
+        break;
+      }
+    }
+    series.bucketCounts[index] += 1;
   }
 
   @override
   MetricData collect(Resource resource, {required int metricCardinalityLimit}) {
-    final grouped = <_AttributeSetKey, List<_Measurement<T>>>{};
-
-    for (final measurement in _measurements) {
-      final attributes = _resolveRetainedAttributes(
-        attributes: measurement.attributes ?? const <String, Object>{},
-        retainedAttributeSets: _retainedAttributeSets,
-        metricCardinalityLimit: metricCardinalityLimit,
-      );
-      grouped
-          .putIfAbsent(_AttributeSetKey(attributes), () => <_Measurement<T>>[])
-          .add(
-            _Measurement<T>(
-              value: measurement.value,
-              timestamp: measurement.timestamp,
-              startTimestamp: measurement.timestamp,
-              attributes: attributes,
-            ),
-          );
-    }
-
     return MetricData(
       name: name,
       description: description,
@@ -396,54 +483,24 @@ final class _HistogramMetric<T extends num>
       resource: resource,
       scope: scope,
       aggregationTemporality: AggregationTemporality.cumulative,
-      points: grouped.entries
+      points: _series.values
           .map(
-            (entry) =>
-                _aggregateHistogramPoint(entry.key.attributes, entry.value),
+            (series) => MetricPoint(
+              value: series.sum,
+              timestamp: series.timestamp,
+              startTimestamp: series.startTimestamp,
+              attributes: series.attributes,
+              count: series.count,
+              sum: series.sum,
+              min: series.min,
+              max: series.max,
+              // Snapshot: exporters may hold the point (in-memory) or
+              // re-encode it on retry, so it must not change afterwards.
+              bucketCounts: List<int>.unmodifiable(series.bucketCounts),
+              explicitBounds: explicitBounds,
+            ),
           )
           .toList(growable: false),
-    );
-  }
-
-  MetricPoint _aggregateHistogramPoint(
-    Map<String, Object> attributes,
-    List<_Measurement<T>> measurements,
-  ) {
-    final values = measurements
-        .map((measurement) => measurement.value.toDouble())
-        .toList(growable: false);
-    final sum = values.fold<double>(0, (total, value) => total + value);
-    final min = values.reduce((left, right) => left < right ? left : right);
-    final max = values.reduce((left, right) => left > right ? left : right);
-    final explicitBounds = boundaries ?? const <double>[];
-    final bucketCounts = List<int>.filled(explicitBounds.length + 1, 0);
-
-    for (final value in values) {
-      var index = explicitBounds.length;
-      for (
-        var boundIndex = 0;
-        boundIndex < explicitBounds.length;
-        boundIndex += 1
-      ) {
-        if (value <= explicitBounds[boundIndex]) {
-          index = boundIndex;
-          break;
-        }
-      }
-      bucketCounts[index] += 1;
-    }
-
-    return MetricPoint(
-      value: sum,
-      timestamp: measurements.last.timestamp,
-      startTimestamp: measurements.first.timestamp,
-      attributes: attributes,
-      count: measurements.length,
-      sum: sum,
-      min: min,
-      max: max,
-      bucketCounts: bucketCounts,
-      explicitBounds: explicitBounds,
     );
   }
 }

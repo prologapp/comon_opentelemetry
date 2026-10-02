@@ -284,7 +284,7 @@ final class OtlpJsonCodec {
       return <String, Object?>{'intValue': value.toString()};
     }
     if (value is double) {
-      return <String, Object?>{'doubleValue': value};
+      return <String, Object?>{'doubleValue': _encodeDouble(value)};
     }
     if (value is List) {
       return <String, Object?>{
@@ -296,6 +296,20 @@ final class OtlpJsonCodec {
       };
     }
     return <String, Object?>{'stringValue': value.toString()};
+  }
+
+  /// Encodes a double per the proto3 JSON mapping: finite values stay JSON
+  /// numbers, while NaN and +/-Infinity become the strings "NaN",
+  /// "Infinity" and "-Infinity". `jsonEncode` throws on non-finite numbers,
+  /// which would otherwise fail the whole export batch.
+  static Object _encodeDouble(double value) {
+    if (value.isFinite) {
+      return value;
+    }
+    if (value.isNaN) {
+      return 'NaN';
+    }
+    return value.isNegative ? '-Infinity' : 'Infinity';
   }
 
   static String _toUnixNanos(DateTime timestamp) {
@@ -337,7 +351,12 @@ final class OtlpJsonCodec {
       'timeUnixNano': _toUnixNanos(point.timestamp),
       if (point.startTimestamp case final startTimestamp?)
         'startTimeUnixNano': _toUnixNanos(startTimestamp),
-      if (point.value is int) 'asInt': point.value else 'asDouble': point.value,
+      if (point.value case final int value)
+        'asInt': value
+      else if (point.value case final double value)
+        'asDouble': _encodeDouble(value)
+      else
+        'asDouble': point.value,
     };
   }
 
@@ -348,11 +367,13 @@ final class OtlpJsonCodec {
       if (point.startTimestamp case final startTimestamp?)
         'startTimeUnixNano': _toUnixNanos(startTimestamp),
       'count': point.count ?? 0,
-      'sum': point.sum ?? 0.0,
-      ...?point.min == null ? null : <String, Object?>{'min': point.min},
-      ...?point.max == null ? null : <String, Object?>{'max': point.max},
+      'sum': _encodeDouble(point.sum ?? 0.0),
+      if (point.min case final min?) 'min': _encodeDouble(min),
+      if (point.max case final max?) 'max': _encodeDouble(max),
       'bucketCounts': point.bucketCounts ?? const <int>[],
-      'explicitBounds': point.explicitBounds ?? const <double>[],
+      'explicitBounds': (point.explicitBounds ?? const <double>[])
+          .map(_encodeDouble)
+          .toList(growable: false),
     };
   }
 

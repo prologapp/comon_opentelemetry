@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:collection';
 
+import 'package:meta/meta.dart';
+
 import '../exporters/span_exporter.dart';
 import 'span.dart';
 import 'span_data.dart';
@@ -16,6 +18,12 @@ final class BatchSpanProcessor implements SpanProcessor {
     this.onDrop,
   }) : _exporter = exporter {
     _timer = Timer.periodic(scheduleDelay, (_) {
+      // Skip the tick while a flush is queued or running: it will export
+      // what is queued, and queueing one cycle per tick behind a slow export
+      // would only grow the flush chain.
+      if (_queuedFlushes > 0) {
+        return;
+      }
       unawaited(_flushBatch());
     });
   }
@@ -38,6 +46,13 @@ final class BatchSpanProcessor implements SpanProcessor {
   Timer? _timer;
   bool _isShutdown = false;
   Future<void> _pendingFlush = Future<void>.value();
+  int _queuedFlushes = 0;
+  bool _sizeFlushScheduled = false;
+
+  /// Number of flush cycles queued or running. Test-only: lets tests assert
+  /// that the flush chain stays bounded while an export is slow.
+  @visibleForTesting
+  int get queuedFlushCount => _queuedFlushes;
 
   @override
   void onStart(Span span) {}
@@ -49,13 +64,21 @@ final class BatchSpanProcessor implements SpanProcessor {
     }
 
     if (_queue.length >= maxQueueSize) {
-      onDrop?.call();
       _queue.removeFirst();
+      try {
+        onDrop?.call();
+      } catch (_) {
+        // A host callback must never break the processor nor the caller.
+      }
     }
     _queue.addLast(span.toSpanData());
 
-    if (_queue.length >= maxBatchSize) {
-      unawaited(_flushBatch());
+    // One size-triggered flush at a time: it keeps draining full batches,
+    // so scheduling another per item would only grow the flush chain while
+    // an export is slow.
+    if (_queue.length >= maxBatchSize && !_sizeFlushScheduled) {
+      _sizeFlushScheduled = true;
+      unawaited(_flushBatch(sizeTriggered: true));
     }
   }
 
@@ -85,33 +108,46 @@ final class BatchSpanProcessor implements SpanProcessor {
     }
   }
 
-  Future<void> _flushBatch({bool all = false}) {
+  /// Queues one flush cycle on the chain. Every export carries at most
+  /// [maxBatchSize] items. A timer cycle exports one batch; a
+  /// size-triggered cycle drains while a full batch is queued; [all]
+  /// drains the whole queue (forceFlush/shutdown).
+  Future<void> _flushBatch({bool all = false, bool sizeTriggered = false}) {
+    _queuedFlushes += 1;
     _pendingFlush = _pendingFlush.then((_) async {
       try {
-        if (_queue.isEmpty) {
-          return;
-        }
-
-        do {
+        while (_queue.isNotEmpty) {
           final batch = <SpanData>[];
-          final limit = all ? _queue.length : maxBatchSize;
-          while (_queue.isNotEmpty && batch.length < limit) {
+          // A non-positive maxBatchSize falls back to one export per cycle.
+          final batchLimit = maxBatchSize > 0 ? maxBatchSize : _queue.length;
+          while (_queue.isNotEmpty && batch.length < batchLimit) {
             batch.add(_queue.removeFirst());
           }
 
-          if (batch.isNotEmpty) {
-            final exportFuture = _exporter.export(batch);
-            if (exportTimeout == null) {
-              await exportFuture;
-            } else {
-              await exportFuture.timeout(exportTimeout!);
-            }
+          final exportFuture = _exporter.export(batch);
+          if (exportTimeout == null) {
+            await exportFuture;
+          } else {
+            await exportFuture.timeout(exportTimeout!);
           }
-        } while (all && _queue.isNotEmpty);
+
+          final keepDraining =
+              all || (sizeTriggered && _queue.length >= maxBatchSize);
+          if (!keepDraining) {
+            break;
+          }
+        }
       } catch (_) {
         // Swallow export failures so the flush chain never becomes a
         // permanently-rejected Future. SDK-level error reporting is tracked
         // separately (F2.2, out of scope here).
+      } finally {
+        // Lowered in the same synchronous step as the last queue check, so
+        // an item that fills a batch afterwards always schedules a new cycle.
+        if (sizeTriggered) {
+          _sizeFlushScheduled = false;
+        }
+        _queuedFlushes -= 1;
       }
     });
 

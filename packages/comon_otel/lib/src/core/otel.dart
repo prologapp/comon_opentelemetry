@@ -286,7 +286,10 @@ final class Otel {
 
     final processors = resolvedSdkDisabled
         ? const <SpanProcessor>[]
-        : <SpanProcessor>[SessionSpanProcessor(), ..._buildSpanProcessors(config)];
+        : <SpanProcessor>[
+            SessionSpanProcessor(),
+            ..._buildSpanProcessors(config),
+          ];
     final tracerProvider = TracerProvider(
       resource: resource,
       spanProcessors: processors,
@@ -323,13 +326,15 @@ final class Otel {
         previousSessionId.isNotEmpty &&
         previousSessionId != OtelSession.id &&
         OtelSession.claimRotationEmission()) {
-      final span = tracerProvider.getTracer('comon_otel').startSpan(
-        'session.rotation',
-        attributes: <String, Object>{
-          SemanticAttributes.sessionId: OtelSession.id,
-          SemanticAttributes.sessionPreviousId: previousSessionId,
-        },
-      );
+      final span = tracerProvider
+          .getTracer('comon_otel')
+          .startSpan(
+            'session.rotation',
+            attributes: <String, Object>{
+              SemanticAttributes.sessionId: OtelSession.id,
+              SemanticAttributes.sessionPreviousId: previousSessionId,
+            },
+          );
       await span.end();
     }
   }
@@ -610,20 +615,44 @@ final class Otel {
   OtelLogger get logger => loggerProvider.getLogger('comon_otel');
 
   /// Shuts down the current providers and clears the singleton if needed.
+  ///
+  /// Each signal is shut down independently: a failure in one never skips
+  /// the others, and no error is propagated to the caller.
   Future<void> dispose() async {
-    await tracerProvider.shutdown();
-    await meterProvider.shutdown();
-    await loggerProvider.shutdown();
+    for (final shutdown in <Future<void> Function()>[
+      tracerProvider.shutdown,
+      meterProvider.shutdown,
+      loggerProvider.shutdown,
+    ]) {
+      try {
+        await shutdown();
+      } catch (_) {
+        // Telemetry never throws into the host.
+      }
+    }
     if (identical(_instance, this)) {
       _instance = null;
     }
   }
 
   /// Flushes pending trace, metric, and log exports.
+  ///
+  /// Each signal is flushed independently: a failure in one (e.g. a metric
+  /// exporter that throws) never prevents the others from flushing, and no
+  /// error is propagated to the caller.
   static Future<void> forceFlush() async {
-    await instance.tracerProvider.forceFlush();
-    await instance.meterProvider.forceFlush();
-    await instance.loggerProvider.forceFlush();
+    final otel = instance;
+    for (final flush in <Future<void> Function()>[
+      otel.tracerProvider.forceFlush,
+      otel.meterProvider.forceFlush,
+      otel.loggerProvider.forceFlush,
+    ]) {
+      try {
+        await flush();
+      } catch (_) {
+        // Telemetry never throws into the host.
+      }
+    }
   }
 
   /// Shuts down the shared SDK instance, if it exists.

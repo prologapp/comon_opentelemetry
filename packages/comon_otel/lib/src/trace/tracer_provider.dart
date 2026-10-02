@@ -34,7 +34,6 @@ final class TracerProvider {
   /// Limits applied to spans started through this provider.
   final SpanLimits spanLimits;
   final List<SpanProcessor> _spanProcessors;
-  final Random _random = Random.secure();
 
   /// Returns a tracer for a specific instrumentation library or package.
   Tracer getTracer(
@@ -143,26 +142,68 @@ final class TracerProvider {
   /// Flushes all configured span processors.
   Future<void> forceFlush() async {
     for (final processor in _spanProcessors) {
-      await processor.forceFlush();
+      try {
+        await processor.forceFlush();
+      } catch (_) {
+        // One failing processor must not keep the others from flushing.
+      }
     }
   }
 
   /// Shuts down all configured span processors.
   Future<void> shutdown() async {
     for (final processor in _spanProcessors) {
-      await processor.shutdown();
+      try {
+        await processor.shutdown();
+      } catch (_) {
+        // One failing processor must not keep the others from shutting down.
+      }
     }
   }
 
-  TraceId _nextTraceId() => TraceId(_nextHex(32));
+  TraceId _nextTraceId() => TraceId(_nextNonZeroHex(words: 4));
 
-  SpanId _nextSpanId() => SpanId(_nextHex(16));
+  SpanId _nextSpanId() => SpanId(_nextNonZeroHex(words: 2));
+}
 
-  String _nextHex(int length) {
+/// 2^32, written as a literal so it also holds on the web, where `1 << 32`
+/// is 0.
+const int _twoTo32 = 0x100000000;
+
+/// Id generator, one per isolate (top-level finals are isolate-local).
+///
+/// `Random.secure()` costs a platform call per value (~19 us each on the
+/// host), which made the old 24-calls-per-span generation ~250-400 us per
+/// span on the main isolate. Ids only need to be unique and unpredictable
+/// enough, not cryptographic: a fast PRNG seeded once from
+/// `Random.secure()` with 64 bits (the VM PRNG keeps a 64-bit state) gives
+/// that. The seed never comes from the clock, so devices booting in the
+/// same millisecond do not share a sequence.
+final Random _idRandom = _newSeededIdRandom();
+
+Random _newSeededIdRandom() {
+  final secure = Random.secure();
+  final high = secure.nextInt(_twoTo32);
+  final low = secure.nextInt(_twoTo32);
+  return Random(high * _twoTo32 + low);
+}
+
+/// Returns [words] random 32-bit words as lowercase hex (8 chars per word),
+/// regenerating in the (negligible) case of an all-zero id, which W3C
+/// Trace Context defines as invalid.
+String _nextNonZeroHex({required int words}) {
+  while (true) {
     final buffer = StringBuffer();
-    while (buffer.length < length) {
-      buffer.write(_random.nextInt(256).toRadixString(16).padLeft(2, '0'));
+    var allZero = true;
+    for (var i = 0; i < words; i++) {
+      final word = _idRandom.nextInt(_twoTo32);
+      if (word != 0) {
+        allZero = false;
+      }
+      buffer.write(word.toRadixString(16).padLeft(8, '0'));
     }
-    return buffer.toString().substring(0, length);
+    if (!allZero) {
+      return buffer.toString();
+    }
   }
 }

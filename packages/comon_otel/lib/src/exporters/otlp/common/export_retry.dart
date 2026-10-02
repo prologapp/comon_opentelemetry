@@ -10,6 +10,7 @@ final class OtlpRetryConfig {
     this.initialDelay = const Duration(milliseconds: 200),
     this.backoffMultiplier = 2.0,
     this.maxDelay = const Duration(seconds: 2),
+    this.maxRetryAfter = const Duration(seconds: 30),
   }) : assert(maxAttempts >= 1, 'maxAttempts must be >= 1');
 
   /// Maximum number of export attempts.
@@ -23,6 +24,11 @@ final class OtlpRetryConfig {
 
   /// Upper bound for exponential backoff.
   final Duration maxDelay;
+
+  /// Longest server `Retry-After` the exporter will wait for before
+  /// retrying. A longer one makes the export fail at once (no retry) instead
+  /// of blocking the signal's export chain; a shorter one is honored as sent.
+  final Duration maxRetryAfter;
 }
 
 /// Executes an OTLP HTTP export with retry semantics.
@@ -40,7 +46,7 @@ Future<ExportResult> executeOtlpExportWithRetry({
     try {
       final response = await send();
       if (response.isSuccess) {
-        onSuccessResponse?.call(response);
+        _reportSuccessResponse(() => onSuccessResponse?.call(response));
         return ExportResult.success;
       }
 
@@ -48,8 +54,17 @@ Future<ExportResult> executeOtlpExportWithRetry({
         return ExportResult.failure;
       }
 
+      // Never resend earlier than the server asked: when a collector is
+      // overloaded, retrying early from a whole fleet is what Retry-After
+      // exists to prevent. A wait longer than maxRetryAfter (delta-seconds up
+      // to 86400 s, or an HTTP-date) would instead freeze this signal's export
+      // chain and hold any flush the host awaits, so that batch fails now
+      // and follows the normal failure path.
       final retryAfter = response.retryAfter;
       if (retryAfter != null) {
+        if (retryAfter > retry.maxRetryAfter) {
+          return ExportResult.failure;
+        }
         delay = retryAfter;
       }
     } catch (_) {
@@ -85,7 +100,7 @@ Future<ExportResult> executeOtlpGrpcExportWithRetry({
 
     try {
       final responseBytes = await send();
-      onSuccessResponse?.call(responseBytes);
+      _reportSuccessResponse(() => onSuccessResponse?.call(responseBytes));
       return ExportResult.success;
     } on OtlpGrpcTransportException catch (error) {
       if (!error.retryable || attempt >= retry.maxAttempts) {
@@ -108,4 +123,16 @@ Future<ExportResult> executeOtlpGrpcExportWithRetry({
   }
 
   return ExportResult.failure;
+}
+
+/// Runs the partial-success handler of a response the server already
+/// accepted. A body it cannot parse (e.g. a captive portal answering 200
+/// with HTML) must not turn the export into a failure: that would make the
+/// retry loop resend a batch the server has already taken.
+void _reportSuccessResponse(void Function() report) {
+  try {
+    report();
+  } catch (_) {
+    // Partial-success reporting is best effort.
+  }
 }

@@ -60,28 +60,45 @@ final class MeterProvider {
         ? metricCardinalityLimit
         : 2000;
 
-    return _metrics
-        .map(
-          (metric) => metric.collect(
-            resource,
-            metricCardinalityLimit: resolvedMetricCardinalityLimit,
-          ),
-        )
-        .where((metric) => metric.points.isNotEmpty)
-        .toList(growable: false);
+    final collected = <MetricData>[];
+    for (final metric in _metrics) {
+      try {
+        final data = metric.collect(
+          resource,
+          metricCardinalityLimit: resolvedMetricCardinalityLimit,
+        );
+        if (data.points.isNotEmpty) {
+          collected.add(data);
+        }
+      } catch (_) {
+        // A failing instrument (e.g. an observable callback that throws)
+        // only loses its own data point for this cycle; it must not stop
+        // the other instruments from being collected.
+      }
+    }
+    return collected.toList(growable: false);
   }
 
   /// Flushes all attached metric readers.
   Future<void> forceFlush() async {
     for (final reader in _readers) {
-      await reader.forceFlush();
+      try {
+        await reader.forceFlush();
+      } catch (_) {
+        // One failing reader must not keep the others from flushing.
+        // Telemetry never throws into the host.
+      }
     }
   }
 
   /// Shuts down all attached metric readers.
   Future<void> shutdown() async {
     for (final reader in _readers) {
-      await reader.shutdown();
+      try {
+        await reader.shutdown();
+      } catch (_) {
+        // One failing reader must not keep the others from shutting down.
+      }
     }
   }
 }

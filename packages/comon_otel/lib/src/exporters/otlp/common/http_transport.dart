@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:archive/archive.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart' show parseHttpDate;
 
 /// Supported OTLP payload compression algorithms.
 enum OtlpCompression { none, gzip }
@@ -103,13 +105,26 @@ final class OtlpHttpResponse {
       return Duration(seconds: seconds.clamp(0, 86400));
     }
 
-    final retryAt = DateTime.tryParse(rawValue.trim())?.toUtc();
+    // RFC 9110 sends the date form as an HTTP-date (IMF-fixdate, e.g.
+    // "Wed, 21 Oct 2015 07:28:00 GMT"); ISO 8601 is still accepted.
+    final retryAt =
+        (_tryParseHttpDate(rawValue.trim()) ??
+                DateTime.tryParse(rawValue.trim()))
+            ?.toUtc();
     if (retryAt == null) {
       return null;
     }
 
     final remaining = retryAt.difference(DateTime.now().toUtc());
     return remaining.isNegative ? Duration.zero : remaining;
+  }
+}
+
+DateTime? _tryParseHttpDate(String value) {
+  try {
+    return parseHttpDate(value);
+  } on FormatException {
+    return null;
   }
 }
 
@@ -144,22 +159,50 @@ final class DefaultOtlpHttpTransport implements OtlpHttpTransport {
   }
 
   Future<OtlpHttpResponse> _post(OtlpHttpRequest request) async {
-    final httpRequest = http.Request('POST', request.uri)
-      ..headers.addAll(request.headers)
-      ..bodyBytes = request.bodyBytes;
-    final streamedResponse = await _client
-        .send(httpRequest)
-        .timeout(request.timeout);
-    final response = await http.Response.fromStream(
-      streamedResponse,
-    ).timeout(request.timeout);
+    // `Future.timeout` alone only stops waiting: the request keeps its
+    // socket open against a server that never answers. The abort trigger
+    // makes the client actually tear the connection down, and one deadline
+    // covers both the send and the body read.
+    final abort = Completer<void>();
+    final deadline = Timer(request.timeout, () {
+      if (!abort.isCompleted) {
+        abort.complete();
+      }
+    });
+    var completed = false;
+    try {
+      final httpRequest =
+          http.AbortableRequest('POST', request.uri, abortTrigger: abort.future)
+            ..headers.addAll(request.headers)
+            ..bodyBytes = request.bodyBytes;
+      // The `.timeout` calls remain as a fallback for injected clients that
+      // ignore the abort trigger.
+      final streamedResponse = await _client
+          .send(httpRequest)
+          .timeout(request.timeout);
+      final response = await http.Response.fromStream(
+        streamedResponse,
+      ).timeout(request.timeout);
+      completed = true;
 
-    return OtlpHttpResponse(
-      statusCode: response.statusCode,
-      body: response.body,
-      rawBody: response.bodyBytes,
-      headers: Map<String, String>.unmodifiable(response.headers),
-    );
+      return OtlpHttpResponse(
+        statusCode: response.statusCode,
+        body: response.body,
+        rawBody: response.bodyBytes,
+        headers: Map<String, String>.unmodifiable(response.headers),
+      );
+    } on http.RequestAbortedException {
+      throw TimeoutException(
+        'OTLP HTTP request exceeded ${request.timeout}',
+        request.timeout,
+      );
+    } finally {
+      deadline.cancel();
+      // Any failure path (fallback timeout included) releases the connection.
+      if (!completed && !abort.isCompleted) {
+        abort.complete();
+      }
+    }
   }
 
   @override
