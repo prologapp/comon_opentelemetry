@@ -1991,6 +1991,31 @@ void main() {
       expect(OtelFlutterErrorRateLimiter.maxPerMinute, 1);
     });
 
+    test('a rejected configure keeps the active windows and the clock', () {
+      OtelFlutterErrorRateLimiter.configure(
+        maxPerMinute: 2,
+        now: () => fakeNow,
+      );
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isTrue);
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isTrue);
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isFalse);
+
+      for (final invalid in <int>[0, -1]) {
+        expect(
+          () => OtelFlutterErrorRateLimiter.configure(maxPerMinute: invalid),
+          throwsArgumentError,
+        );
+      }
+
+      // Mesma janela: limpar as janelas daria cota nova ao grupo esgotado, e
+      // trocar o relógio falso pelo real também (o real já passou do fim da
+      // janela aberta em fakeNow).
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isFalse);
+      // E o grupo não fica preso: a janela acaba quando o relógio anda.
+      fakeNow = fakeNow.add(OtelFlutterErrorRateLimiter.window);
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('spent'), isTrue);
+    });
+
     test('install rejects a config limit below 1 before touching the '
         'active installation', () async {
       const valid = ComonOtelFlutterConfig(
