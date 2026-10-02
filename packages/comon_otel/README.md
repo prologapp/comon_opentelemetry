@@ -205,7 +205,7 @@ expect(helper.spanExporter.lastSpanNamed('test-operation'), isNotNull);
 expect(helper.logExporter.logs.single.body, 'inside test');
 ```
 
-`Otel.forceFlush()` now waits for in-flight simple span and log exports in addition to batch processors and metric readers.
+`Otel.forceFlush()` now waits for in-flight simple span and log exports in addition to batch processors and metric readers. `BatchSpanProcessor` and `BatchLogProcessor` hold the caller of `forceFlush()`/`shutdown()` for at most `flushWaitLimit` (default 2 s); past it the flush keeps running in the background, without cancelling the in-flight export.
 
 Collector-backed integration coverage is also available:
 
@@ -352,7 +352,7 @@ Current OTLP JSON encoding also includes:
 - grouped resources and scopes for traces, metrics, and logs
 - default `user-agent` header emission for OTLP requests
 - optional gzip request compression via `otlpCompression` or `OTEL_EXPORTER_OTLP_COMPRESSION=gzip`
-- retry/backoff for retryable HTTP responses and transient transport failures, including `Retry-After` on throttling responses
+- retry/backoff for retryable HTTP responses and transient transport failures, including `Retry-After` on throttling responses (a `Retry-After` above `OtlpRetryConfig.maxRetryAfter`, default 30 s, fails the export without retrying)
 - partial success handling for HTTP JSON and HTTP protobuf success responses without retrying accepted payloads
 - resource-level SchemaURL propagation via `resourceSchemaUrl` in `Otel.init(...)`
 - per-signal header overrides via `otlpTracesHeaders`, `otlpMetricsHeaders`, and `otlpLogsHeaders`

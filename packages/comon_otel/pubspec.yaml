@@ -1,6 +1,6 @@
 name: comon_otel
 description: OpenTelemetry SDK foundation for Dart with traces, metrics, logs, context propagation, and OTLP exporters.
-version: 0.0.1-alpha.1
+version: 0.1.0
 resolution: workspace
 homepage: https://github.com/serezhia/comon_opentelemetry/tree/main/packages/comon_otel
 repository: https://github.com/serezhia/comon_opentelemetry
@@ -21,6 +21,7 @@ dependencies:
   archive: ^4.0.7
   grpc: ^5.1.0
   http: ^1.6.0
+  http_parser: ^4.0.0
   matcher: ^0.12.17
   meta: ^1.16.0
 

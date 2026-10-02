@@ -200,6 +200,7 @@ final class OtelEnvConfig {
           eventAttributeCountLimit ?? fallback.attributePerEventCountLimit,
       attributePerLinkCountLimit:
           linkAttributeCountLimit ?? fallback.attributePerLinkCountLimit,
+      attributeValueLengthLimit: fallback.attributeValueLengthLimit,
     );
   }
 

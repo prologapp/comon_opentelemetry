@@ -76,7 +76,8 @@ final class OtelFlutterResourceObserver {
   /// Whether to record battery level/state metrics.
   final bool trackBatteryMetrics;
 
-  /// Whether to count thermal state transitions.
+  /// Whether to count thermal state transitions (the first reading is the
+  /// baseline and is not counted).
   final bool trackThermalMetrics;
 
   /// Whether to record the process RSS gauge.
@@ -115,6 +116,13 @@ final class OtelFlutterResourceObserver {
   StreamSubscription<String>? _thermalSubscription;
   StreamSubscription<String>? _batteryStateSubscription;
 
+  /// Set by [dispose], cleared by [start]. The core SDK has no way to
+  /// unregister an observable instrument, so a disposed observer keeps its
+  /// gauges registered but makes their callbacks observe nothing; the meter
+  /// provider drops point-less metrics, so a reinstall never exports the
+  /// same series twice.
+  bool _disposed = false;
+
   ObservableGauge<double>? _storageGaugeCache;
   Histogram<double>? _batteryLevelHistogramCache;
   ObservableGauge<double>? _batteryStateGaugeCache;
@@ -127,12 +135,15 @@ final class OtelFlutterResourceObserver {
     }
 
     return _storageGaugeCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createObservableGauge(
           storageFreeMetricName,
           unit: 'By',
           description: 'Free storage bytes at recorded milestones.',
           callback: (result) {
+            if (_disposed) {
+              return;
+            }
             for (final entry in _storageMilestoneBytes.entries) {
               result.observe(
                 entry.value.toDouble(),
@@ -152,7 +163,7 @@ final class OtelFlutterResourceObserver {
     }
 
     return _batteryLevelHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createHistogram(
           batteryLevelMetricName,
           unit: '%',
@@ -166,21 +177,18 @@ final class OtelFlutterResourceObserver {
     }
 
     return _batteryStateGaugeCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createObservableGauge(
           batteryStateMetricName,
           description: 'Current battery state (charging/discharging/full).',
           callback: (result) {
             final state = _batteryState;
-            if (state == null) {
+            if (_disposed || state == null) {
               return;
             }
             result.observe(
               1,
-              attributes: <String, Object>{
-                ...staticAttributes,
-                'state': state,
-              },
+              attributes: <String, Object>{...staticAttributes, 'state': state},
             );
           },
         );
@@ -192,7 +200,7 @@ final class OtelFlutterResourceObserver {
     }
 
     return _thermalCounterCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createIntCounter(
           thermalCountMetricName,
           description: 'Count of thermal state transitions.',
@@ -205,12 +213,15 @@ final class OtelFlutterResourceObserver {
     }
 
     return _rssGaugeCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createObservableGauge(
           processRssMetricName,
           unit: 'By',
           description: 'Process resident set size sampled at collection.',
           callback: (result) {
+            if (_disposed) {
+              return;
+            }
             try {
               result.observe(
                 ProcessInfo.currentRss.toDouble(),
@@ -277,18 +288,22 @@ final class OtelFlutterResourceObserver {
   /// before re-subscribing, so calling it twice (or start→dispose→start)
   /// never leaks a subscription.
   void start() {
+    _disposed = false;
     if (trackBatteryMetrics) {
       // Touch the gauge so the instrument is created even if the state
       // stream never emits before the first collection.
       // ignore: unnecessary_statements
       _batteryStateGauge;
       unawaited(_batteryStateSubscription?.cancel());
-      _batteryStateSubscription = _batteryStateStreamGetter().listen((state) {
-        _batteryState = state;
-      }, onError: (Object error, StackTrace stackTrace) {
-        // Telemetria nunca quebra o host: um erro no stream de estado da
-        // bateria apenas mantém o último estado conhecido (ou nenhum).
-      });
+      _batteryStateSubscription = _batteryStateStreamGetter().listen(
+        (state) {
+          _batteryState = state;
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          // Telemetria nunca quebra o host: um erro no stream de estado da
+          // bateria apenas mantém o último estado conhecido (ou nenhum).
+        },
+      );
     }
 
     if (trackRssMetrics) {
@@ -300,25 +315,34 @@ final class OtelFlutterResourceObserver {
 
     if (trackThermalMetrics && thermalStateStreamGetter != null) {
       unawaited(_thermalSubscription?.cancel());
-      _thermalSubscription = thermalStateStreamGetter!().listen((state) {
-        final previous = _lastThermalState;
-        _lastThermalState = state;
-        if (previous == state) {
-          return;
-        }
-        _thermalCounter?.add(
-          1,
-          attributes: <String, Object>{...staticAttributes, 'state': state},
-        );
-      }, onError: (Object error, StackTrace stackTrace) {
-        // Telemetria nunca quebra o host: um erro no stream térmico apenas
-        // interrompe a contagem daquele ciclo, sem propagar a exceção.
-      });
+      // Every subscription takes its own baseline: a state remembered from a
+      // previous subscription must not turn the first new reading into a
+      // transition.
+      _lastThermalState = null;
+      _thermalSubscription = thermalStateStreamGetter!().listen(
+        (state) {
+          final previous = _lastThermalState;
+          _lastThermalState = state;
+          // The first reading is the baseline, not a transition.
+          if (previous == null || previous == state) {
+            return;
+          }
+          _thermalCounter?.add(
+            1,
+            attributes: <String, Object>{...staticAttributes, 'state': state},
+          );
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          // Telemetria nunca quebra o host: um erro no stream térmico apenas
+          // interrompe a contagem daquele ciclo, sem propagar a exceção.
+        },
+      );
     }
   }
 
-  /// Cancels active subscriptions.
+  /// Cancels active subscriptions and silences this observer's gauges.
   void dispose() {
+    _disposed = true;
     _thermalSubscription?.cancel();
     _thermalSubscription = null;
     _batteryStateSubscription?.cancel();

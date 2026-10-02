@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:comon_otel/comon_otel.dart';
@@ -91,7 +90,7 @@ final class OtelDioInterceptor extends Interceptor {
     final uri = options.uri;
     final originalMethod = options.method;
     final method = originalMethod.toUpperCase();
-    final requestBodySize = _estimateBodySize(options.data);
+    final requestBodySize = _estimateRequestBodySize(options);
     final attributes = <String, Object>{
       SemanticAttributes.httpMethod: method,
       SemanticAttributes.httpUrl: uri.toString(),
@@ -106,7 +105,7 @@ final class OtelDioInterceptor extends Interceptor {
     }
 
     final span = Otel.instance.tracerProvider
-        .getTracer(tracerName, version: '0.0.1-alpha.1')
+        .getTracer(tracerName, version: '0.1.0')
         .startSpan(
           spanNameBuilder(options),
           kind: SpanKind.client,
@@ -174,11 +173,19 @@ final class OtelDioInterceptor extends Interceptor {
         }
         final shouldRecordException = statusCode == null || statusCode >= 500;
         if (shouldRecordException) {
-          span.recordException(err, stackTrace: err.stackTrace);
-          span.setStatus(
-            SpanStatus.error,
-            description: err.message ?? err.toString(),
+          // Never put err.toString()/err.message/err.error into the span:
+          // Dio embeds the full request URL there (path PII such as CPF,
+          // pre-signed query signatures). Only the closed-set error type is
+          // exported.
+          final errorType = err.type.name;
+          span.recordException(
+            err,
+            stackTrace: err.stackTrace,
+            attributes: <String, Object>{
+              SemanticAttributes.exceptionMessage: 'DioException[$errorType]',
+            },
           );
+          span.setStatus(SpanStatus.error, description: errorType);
         } else {
           _applyHttpStatus(span, statusCode);
         }
@@ -281,20 +288,42 @@ final class OtelDioInterceptor extends Interceptor {
     return originalMethod != method || !_standardHttpMethods.contains(method);
   }
 
+  int? _estimateRequestBodySize(RequestOptions options) {
+    for (final entry in options.headers.entries) {
+      if (entry.key.toLowerCase() == Headers.contentLengthHeader) {
+        final parsed = _parseContentLength(entry.value?.toString());
+        if (parsed != null) {
+          return parsed;
+        }
+      }
+    }
+
+    return _estimateBodySize(options.data);
+  }
+
   int? _estimateResponseBodySize(Response<dynamic> response) {
-    final contentLength = response.headers.value(Headers.contentLengthHeader);
-    final parsedContentLength = int.tryParse(contentLength ?? '');
-    if (parsedContentLength != null && parsedContentLength >= 0) {
-      return parsedContentLength;
+    final parsed = _parseContentLength(
+      response.headers.value(Headers.contentLengthHeader),
+    );
+    if (parsed != null) {
+      return parsed;
     }
 
     return _estimateBodySize(response.data);
   }
 
-  int? _estimateBodySize(Object? data) {
-    if (data == null) {
+  int? _parseContentLength(String? value) {
+    final parsed = int.tryParse(value ?? '');
+    if (parsed == null || parsed < 0) {
       return null;
     }
+    return parsed;
+  }
+
+  /// Measures only sizes that are already cheaply available on the main
+  /// isolate. Structured bodies (Map/List/objects) are never re-serialized
+  /// just to be measured: without a Content-Length the attribute is omitted.
+  int? _estimateBodySize(Object? data) {
     if (data is Uint8List) {
       return data.lengthInBytes;
     }
@@ -302,20 +331,38 @@ final class OtelDioInterceptor extends Interceptor {
       return data.length;
     }
     if (data is String) {
-      return utf8.encode(data).length;
+      return _utf8Length(data);
     }
     if (data is FormData) {
       return data.length;
     }
-    if (data is Map || data is List) {
-      return utf8.encode(jsonEncode(data)).length;
-    }
+    return null;
+  }
 
-    try {
-      return utf8.encode(jsonEncode(data)).length;
-    } catch (_) {
-      return null;
+  /// UTF-8 byte length of [value] without allocating an encoded copy.
+  static int _utf8Length(String value) {
+    var length = 0;
+    final codeUnits = value.codeUnits;
+    for (var index = 0; index < codeUnits.length; index++) {
+      final unit = codeUnits[index];
+      if (unit < 0x80) {
+        length += 1;
+      } else if (unit < 0x800) {
+        length += 2;
+      } else if (unit >= 0xD800 &&
+          unit <= 0xDBFF &&
+          index + 1 < codeUnits.length &&
+          codeUnits[index + 1] >= 0xDC00 &&
+          codeUnits[index + 1] <= 0xDFFF) {
+        // Valid surrogate pair: one 4-byte code point.
+        length += 4;
+        index++;
+      } else {
+        // BMP char or lone surrogate (utf8.encode emits U+FFFD, 3 bytes).
+        length += 3;
+      }
     }
+    return length;
   }
 
   Span? _takeSpan(RequestOptions options) {

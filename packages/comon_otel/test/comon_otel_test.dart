@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:comon_otel/comon_otel.dart';
 import 'package:comon_otel/src/core/otel_session.dart';
 import 'package:comon_otel/src/exporters/otlp/common/exporter_headers.dart';
+import 'package:comon_otel/src/metrics/meter.dart' show debugRetainedEntryCount;
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart' show formatHttpDate;
 import 'package:test/test.dart';
 
 part 'common/test_support.dart';
@@ -16,6 +19,11 @@ part 'src/config_resource_tests.dart';
 part 'src/http_transport_tests.dart';
 part 'src/batch_processor_health_tests.dart';
 part 'src/session_tests.dart';
+part 'src/metric_aggregation_tests.dart';
+part 'src/export_resilience_tests.dart';
+part 'src/id_generation_tests.dart';
+part 'src/error_scrub_tests.dart';
+part 'src/value_length_limit_tests.dart';
 
 late InMemorySpanExporter exporter;
 late InMemoryMetricExporter metricExporter;
@@ -53,5 +61,10 @@ void main() {
     defineHttpTransportTests();
     defineBatchProcessorHealthTests();
     defineSessionTests();
+    defineMetricAggregationTests();
+    defineExportResilienceTests();
+    defineIdGenerationTests();
+    defineErrorScrubTests();
+    defineValueLengthLimitTests();
   });
 }

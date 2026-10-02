@@ -57,7 +57,7 @@ final class OtelFlutterFrameTimingObserver {
     }
 
     return _frameDurationHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createHistogram(
           frameDurationMetricName,
           unit: 'ms',
@@ -72,7 +72,7 @@ final class OtelFlutterFrameTimingObserver {
     }
 
     return _buildDurationHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createHistogram(
           buildDurationMetricName,
           unit: 'ms',
@@ -87,7 +87,7 @@ final class OtelFlutterFrameTimingObserver {
     }
 
     return _rasterDurationHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createHistogram(
           rasterDurationMetricName,
           unit: 'ms',
@@ -102,7 +102,7 @@ final class OtelFlutterFrameTimingObserver {
     }
 
     return _slowFrameCounterCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createIntCounter(
           slowFrameCountMetricName,
           description:
@@ -116,7 +116,7 @@ final class OtelFlutterFrameTimingObserver {
     }
 
     return _jankFrameCounterCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createIntCounter(
           jankFrameCountMetricName,
           description:

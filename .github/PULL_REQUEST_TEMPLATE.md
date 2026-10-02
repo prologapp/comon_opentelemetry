@@ -7,7 +7,7 @@ Describe the change in 2-4 bullet points.
 - [ ] `melos run analyze`
 - [ ] `melos run test`
 - [ ] relevant `publish --dry-run` checks when package metadata or README changed
-- [ ] changelog updated if behavior or API changed
+- [ ] commits follow Conventional Commits (they generate the release CHANGELOG; breaking changes marked with `!` or `BREAKING CHANGE:`)
 
 ## Checklist
 

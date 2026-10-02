@@ -191,15 +191,18 @@ void main() {
       (span) => span.name == 'HTTP POST',
     );
     expect(span.status, SpanStatus.error);
+    expect(span.statusDescription, 'unknown');
+    final exceptionEvent = span.events.singleWhere(
+      (event) => event.name == 'exception',
+    );
+    // The raw Dio message embeds the URL; only the closed-set type is kept.
     expect(
-      span.events.any(
-        (event) =>
-            event.name == 'exception' &&
-            event.attributes[SemanticAttributes.exceptionMessage]
-                .toString()
-                .contains('dio boom'),
-      ),
-      isTrue,
+      exceptionEvent.attributes[SemanticAttributes.exceptionMessage],
+      'DioException[unknown]',
+    );
+    expect(
+      exceptionEvent.attributes[SemanticAttributes.exceptionType],
+      'DioException',
     );
   });
 
@@ -222,15 +225,77 @@ void main() {
 
     final span = spanExporter.spans.single;
     expect(span.status, SpanStatus.error);
+    expect(span.statusDescription, 'connectionTimeout');
     expect(
-      span.events.any(
-        (event) => event.attributes[SemanticAttributes.exceptionMessage]
-            .toString()
-            .contains('timed out'),
-      ),
-      isTrue,
+      span.events.single.attributes[SemanticAttributes.exceptionMessage],
+      'DioException[connectionTimeout]',
     );
   });
+
+  test(
+    'network errors never leak the URL or the raw error message into the span',
+    () async {
+      // CPF in the path + pre-signed S3 query: both must stay out of every
+      // span surface except `http.url` (sanitized app-side by a span
+      // processor at onStart).
+      const sensitiveUrl =
+          'https://bucket.s3.amazonaws.com/colaboradores/12345678909/foto.jpg'
+          '?X-Amz-Signature=deadbeefcafebabe&X-Amz-Credential=AKIASECRET';
+      const sensitiveFragments = <String>[
+        '12345678909',
+        'X-Amz-Signature',
+        'deadbeefcafebabe',
+        'AKIASECRET',
+        '/colaboradores/',
+      ];
+      final dio = Dio()
+        ..httpClientAdapter = _FakeHttpClientAdapter((options) async {
+          throw DioException(
+            requestOptions: options,
+            type: DioExceptionType.connectionError,
+            message: 'connection failed for ${options.uri}',
+            error: StateError('socket closed while fetching ${options.uri}'),
+          );
+        })
+        ..interceptors.add(OtelDioInterceptor());
+
+      await expectLater(
+        dio.put<dynamic>(sensitiveUrl, data: 'x'),
+        throwsA(isA<DioException>()),
+      );
+      await Otel.forceFlush();
+
+      final span = spanExporter.spans.single;
+      final surfaces = <String>[
+        for (final entry in span.attributes.entries)
+          if (entry.key != SemanticAttributes.httpUrl)
+            '${entry.key}=${entry.value}',
+        for (final event in span.events) ...<String>[
+          event.name,
+          for (final entry in event.attributes.entries)
+            '${entry.key}=${entry.value}',
+        ],
+        span.statusDescription ?? '',
+      ];
+      for (final fragment in sensitiveFragments) {
+        expect(
+          surfaces.where((surface) => surface.contains(fragment)),
+          isEmpty,
+          reason: 'span leaked "$fragment"',
+        );
+      }
+
+      expect(span.status, SpanStatus.error);
+      expect(span.statusDescription, 'connectionError');
+      final exceptionEvent = span.events.singleWhere(
+        (event) => event.name == 'exception',
+      );
+      expect(
+        exceptionEvent.attributes[SemanticAttributes.exceptionMessage],
+        'DioException[connectionError]',
+      );
+    },
+  );
 
   test('concurrent requests keep spans isolated', () async {
     final dio = Dio()
@@ -271,9 +336,47 @@ void main() {
     );
   });
 
+  test(
+    'never re-serializes Map/List bodies just to measure their size',
+    () async {
+      final counter = _ToJsonCounter();
+      final dio = Dio()
+        ..httpClientAdapter = _FakeHttpClientAdapter((options) async {
+          // JSON response without Content-Length: Dio decodes it to a Map.
+          return ResponseBody.fromString(
+            '{"items":[1,2,3]}',
+            200,
+            headers: <String, List<String>>{
+              Headers.contentTypeHeader: <String>['application/json'],
+            },
+          );
+        })
+        ..interceptors.add(OtelDioInterceptor());
+
+      await dio.post<dynamic>(
+        'https://example.com/orders',
+        data: <String, Object>{'value': counter},
+      );
+      await Otel.forceFlush();
+
+      // Exactly one serialization: Dio's own, to put the body on the wire.
+      expect(counter.calls, 1);
+      final span = spanExporter.spans.single;
+      expect(
+        span.attributes.containsKey(SemanticAttributes.httpRequestBodySize),
+        isFalse,
+      );
+      expect(
+        span.attributes.containsKey(SemanticAttributes.httpResponseBodySize),
+        isFalse,
+      );
+    },
+  );
+
   test('captures request and response body sizes', () async {
-    final payload = <String, Object>{'note': 'ship it'};
-    final payloadSize = utf8.encode(jsonEncode(payload)).length;
+    // Non-ASCII + astral chars: the cheap UTF-8 count must match utf8.encode.
+    final payload = jsonEncode(<String, Object>{'note': 'ação 🚚 ok'});
+    final payloadSize = utf8.encode(payload).length;
     final responseBody = '{"ok":true}';
     final responseBodySize = utf8.encode(responseBody).length;
 
@@ -302,6 +405,30 @@ void main() {
       responseBodySize,
     );
   });
+
+  test(
+    'uses an explicit request Content-Length for structured bodies',
+    () async {
+      final dio = Dio()
+        ..httpClientAdapter = _FakeHttpClientAdapter((options) async {
+          return ResponseBody.fromString('ok', 200);
+        })
+        ..interceptors.add(OtelDioInterceptor());
+
+      await dio.post<dynamic>(
+        'https://example.com/orders',
+        data: <String, Object>{'note': 'ship it'},
+        options: Options(headers: <String, Object>{'Content-Length': '19'}),
+      );
+      await Otel.forceFlush();
+
+      expect(
+        spanExporter.spans.single.attributes[SemanticAttributes
+            .httpRequestBodySize],
+        19,
+      );
+    },
+  );
 
   test(
     'captures configured headers and redacts sensitive request headers',
@@ -408,5 +535,14 @@ final class _FakeHttpClientAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) {
     return _handler(options);
+  }
+}
+
+final class _ToJsonCounter {
+  int calls = 0;
+
+  Object toJson() {
+    calls += 1;
+    return 'counted';
   }
 }

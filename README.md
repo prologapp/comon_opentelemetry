@@ -69,6 +69,12 @@ docker compose -f demo/otel_end_to_end/docker-compose.yml up -d --build
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation commands, and pull
 request expectations.
 
+## Releasing
+
+Releases are cut from `dev` into `main` and tagged `vX.Y.Z` with
+`tool/release.sh`. See [docs/RELEASING.md](docs/RELEASING.md) (PT-BR) for the full
+flow, versioning rules, hotfix, rollback and how the app pins a release.
+
 ## License
 
 This repository is distributed under the MIT License. See [LICENSE](LICENSE).
