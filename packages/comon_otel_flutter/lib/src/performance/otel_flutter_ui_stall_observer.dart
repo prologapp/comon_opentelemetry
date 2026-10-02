@@ -86,7 +86,7 @@ final class OtelFlutterUiStallObserver with WidgetsBindingObserver {
     }
 
     return _durationHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.1.0')
+        .getMeter(loggerName, version: '0.1.1')
         .createHistogram(
           durationMetricName,
           unit: 'ms',
@@ -101,7 +101,7 @@ final class OtelFlutterUiStallObserver with WidgetsBindingObserver {
     }
 
     return _countCounterCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.1.0')
+        .getMeter(loggerName, version: '0.1.1')
         .createIntCounter(
           countMetricName,
           description: 'Count of heuristic UI thread stalls.',

@@ -1,3 +1,15 @@
+## 0.1.1 - 2026-10-02
+
+_Gerado por `tool/release.sh` a partir de 2 commits desde `v0.1.0`._
+
+### Bug fixes
+
+- **otel:** keep JSON-escaped quotes intact when scrubbing URLs ([#17](https://github.com/prologapp/comon_opentelemetry/pull/17), `e9503d0`)
+
+### Tests
+
+- **core:** assert the host survives when the URL ends in a backslash ([#17](https://github.com/prologapp/comon_opentelemetry/pull/17), `3e3fe1d`)
+
 ## 0.1.0 - 2026-10-02
 
 _Gerado por `tool/release.sh` a partir de 117 commits desde `fbf61da (ponto de fork; nenhuma tag v* ainda)`._
