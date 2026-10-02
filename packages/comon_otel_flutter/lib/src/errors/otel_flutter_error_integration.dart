@@ -205,7 +205,9 @@ Map<String, Object> _guardedAttributes(
 }
 
 /// Name of the counter of error occurrences not exported because their
-/// group exceeded [OtelFlutterErrorRateLimiter.maxPerMinute].
+/// group exceeded [OtelFlutterErrorRateLimiter.maxPerMinute], or because the
+/// group is new while [OtelFlutterErrorRateLimiter.maxTrackedGroups] windows
+/// are active.
 const String _suppressedCountMetricName = 'flutter.error.suppressed.count';
 
 Otel? _suppressedCounterOwner;
@@ -223,7 +225,8 @@ void _countSuppressed(String loggerName, String source) {
           _suppressedCountMetricName,
           description:
               'Captured errors not exported as span and log because their '
-              'error.group.name exceeded the per-minute limit.',
+              'error.group.name exceeded the per-minute limit or the table '
+              'of tracked groups was full.',
         );
   }
   _suppressedCounter!.add(

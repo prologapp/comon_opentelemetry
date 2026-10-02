@@ -1855,6 +1855,66 @@ void main() {
       expect(logsWithBody('flutter.framework_error'), hasLength(7));
     });
 
+    void fillTrackedGroups() {
+      for (var i = 0; i < OtelFlutterErrorRateLimiter.maxTrackedGroups; i++) {
+        expect(OtelFlutterErrorRateLimiter.tryAcquire('g$i'), isTrue);
+      }
+    }
+
+    test('a full table never forgets a group whose window is active', () {
+      fillTrackedGroups();
+      // g0, the oldest tracked group, spends its whole quota.
+      for (
+        var i = 1;
+        i < OtelFlutterErrorRateLimiter.defaultMaxPerMinute;
+        i++
+      ) {
+        expect(OtelFlutterErrorRateLimiter.tryAcquire('g0'), isTrue);
+      }
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('g0'), isFalse);
+
+      fakeNow = fakeNow.add(const Duration(seconds: 10));
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('newcomer'), isFalse);
+
+      // Still inside g0's minute: forgetting g0 would hand it a fresh quota.
+      fakeNow = fakeNow.add(const Duration(seconds: 10));
+      for (var i = 0; i < 10; i++) {
+        expect(OtelFlutterErrorRateLimiter.tryAcquire('g0'), isFalse);
+      }
+    });
+
+    test('a new group with a full table is suppressed and counted', () async {
+      fillTrackedGroups();
+      var fallbackCalls = 0;
+      recordFlutterFrameworkError(
+        FlutterErrorDetails(
+          exception: StateError('newcomer'),
+          stack: StackTrace.current,
+        ),
+        fallback: (_) => fallbackCalls += 1,
+      );
+      await Otel.forceFlush();
+
+      expect(fallbackCalls, 1);
+      expect(spansNamed('flutter.error'), isEmpty);
+      expect(
+        metricExporter
+            .lastMetricNamed('flutter.error.suppressed.count')!
+            .points
+            .single
+            .value,
+        1,
+      );
+    });
+
+    test('a new group is accepted again once the windows expire', () {
+      fillTrackedGroups();
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('newcomer'), isFalse);
+
+      fakeNow = fakeNow.add(OtelFlutterErrorRateLimiter.window);
+      expect(OtelFlutterErrorRateLimiter.tryAcquire('newcomer'), isTrue);
+    });
+
     test('the limit comes from ComonOtelFlutterConfig', () async {
       final instrumentation = ComonOtelFlutter.install(
         config: ComonOtelFlutterConfig(

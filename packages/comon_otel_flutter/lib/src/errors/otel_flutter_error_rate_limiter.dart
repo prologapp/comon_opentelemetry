@@ -10,6 +10,13 @@ import 'dart:collection';
 /// occurrence. Occurrences above the limit are not exported; they are only
 /// counted (see `flutter.error.suppressed.count`).
 ///
+/// At most [maxTrackedGroups] groups are tracked. A group whose window is
+/// still active is never forgotten: forgetting it would hand it a fresh
+/// quota on its next occurrence and let it exceed the limit. With the table
+/// full, groups whose window is over are dropped first; if every tracked
+/// window is still active, an occurrence of a group not yet tracked is
+/// suppressed (and counted) until a window ends.
+///
 /// The limit never applies to the app's error fallback (Sentry, error
 /// screen) nor to error hooks: those run for every occurrence.
 final class OtelFlutterErrorRateLimiter {
@@ -21,8 +28,9 @@ final class OtelFlutterErrorRateLimiter {
   /// Length of a rate-limit window.
   static const Duration window = Duration(minutes: 1);
 
-  /// Maximum number of groups tracked at once. Past it, the oldest tracked
-  /// group is forgotten (its next occurrence starts a fresh window).
+  /// Maximum number of groups tracked at once. Past it, only groups whose
+  /// window is over are dropped; a new group is suppressed while every
+  /// tracked window is still active.
   static const int maxTrackedGroups = 256;
 
   static int? _maxPerMinute = defaultMaxPerMinute;
@@ -48,7 +56,9 @@ final class OtelFlutterErrorRateLimiter {
   static void reset() => configure();
 
   /// Whether an occurrence of [group] may be exported now. Consumes one slot
-  /// of the group's current window when it returns `true`.
+  /// of the group's current window when it returns `true`. Returns `false`
+  /// for a group not yet tracked while [maxTrackedGroups] active windows are
+  /// tracked.
   static bool tryAcquire(String group) {
     final limit = _maxPerMinute;
     if (limit == null) {
@@ -63,7 +73,7 @@ final class OtelFlutterErrorRateLimiter {
         _windows.removeWhere((_, value) => value.isOverAt(now));
       }
       if (_windows.length >= maxTrackedGroups) {
-        _windows.remove(_windows.keys.first);
+        return false;
       }
       current = _GroupWindow(now);
       _windows[group] = current;
