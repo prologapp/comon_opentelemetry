@@ -234,6 +234,52 @@ void defineErrorScrubTests() {
       },
     );
 
+    test(
+      'an explicit exception.message is scrubbed on every span path',
+      () async {
+        const message = 'upload to $_leakyUrl failed';
+        const scrubbed = 'upload to https://bucket.s3.amazonaws.com/… failed';
+        final span = Otel.instance.tracer.startSpan('explicit');
+        span.setAttribute(SemanticAttributes.exceptionMessage, message);
+        span.addEvent(
+          'manual-exception',
+          attributes: const <String, Object>{
+            SemanticAttributes.exceptionMessage: message,
+            SemanticAttributes.exceptionStacktrace: message,
+          },
+        );
+        span.recordException(
+          StateError('boom'),
+          attributes: const <String, Object>{
+            SemanticAttributes.exceptionMessage: message,
+          },
+        );
+        await span.end();
+
+        final data = exporter.lastSpanNamed('explicit')!;
+        expect(data.attributes[SemanticAttributes.exceptionMessage], scrubbed);
+        final manual = data.events.firstWhere(
+          (event) => event.name == 'manual-exception',
+        );
+        expect(
+          manual.attributes[SemanticAttributes.exceptionMessage],
+          scrubbed,
+        );
+        expect(
+          manual.attributes[SemanticAttributes.exceptionStacktrace],
+          scrubbed,
+        );
+        final recorded = data.events.firstWhere(
+          (event) => event.name == 'exception',
+        );
+        expect(
+          recorded.attributes[SemanticAttributes.exceptionMessage],
+          scrubbed,
+        );
+        _expectNoLeak(_flattenSpan(data));
+      },
+    );
+
     test('logger.error scrubs exception message and stack', () async {
       Otel.instance.loggerProvider
           .getLogger('scrub-logger')
