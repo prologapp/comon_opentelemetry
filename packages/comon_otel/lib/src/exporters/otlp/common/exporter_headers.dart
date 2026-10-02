@@ -1,7 +1,7 @@
 import 'http_transport.dart';
 
 /// Default user-agent header used by OTLP exporters.
-const String defaultOtlpUserAgent = 'OTel-OTLP-Exporter-Dart/0.1.0';
+const String defaultOtlpUserAgent = 'OTel-OTLP-Exporter-Dart/0.1.1';
 
 /// Builds OTLP HTTP headers for a specific content type and compression mode.
 Map<String, String> buildOtlpHttpHeaders({
