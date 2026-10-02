@@ -85,7 +85,9 @@ Before opening a pull request, ensure the following:
 - `melos run analyze` passes
 - `melos run test` passes
 - relevant package `publish --dry-run` checks pass when changing package metadata, README, or examples
-- `CHANGELOG.md` is updated when the change affects package behavior or public API
+- commit messages follow Conventional Commits (`type(scope): description`, `!` or
+  a `BREAKING CHANGE:` footer for breaking changes); they become the release
+  `CHANGELOG.md` section, so `CHANGELOG.md` is not edited in feature PRs
 
 PRs should explain:
 
@@ -93,6 +95,16 @@ PRs should explain:
 - why the change is needed
 - how the change was validated
 - whether there are API, docs, or migration implications
+
+Open pull requests against `dev`. `main` only receives release and hotfix PRs.
+
+## Releasing
+
+Releases go through `tool/release.sh` (`prepare`, `tag`, `back-merge`,
+`pin-snippet`). Do not bump versions or edit `CHANGELOG.md` by hand in feature
+PRs: the release section is generated from conventional commit messages, so write
+them as `type(scope): description`. See [docs/RELEASING.md](docs/RELEASING.md)
+(PT-BR).
 
 ## Reporting Issues
 
