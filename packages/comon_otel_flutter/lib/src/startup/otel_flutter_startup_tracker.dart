@@ -54,7 +54,7 @@ final class OtelFlutterStartupTracker {
 
     final tracer = Otel.instance.tracerProvider.getTracer(
       loggerName,
-      version: '0.0.1-alpha.1',
+      version: '0.1.0',
     );
     final startupSpan = tracer.startSpan(
       spanName,
@@ -102,7 +102,7 @@ final class OtelFlutterStartupTracker {
     }
 
     return _phaseDurationHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.0.1-alpha.1')
+        .getMeter(loggerName, version: '0.1.0')
         .createHistogram(
           phaseDurationMetricName,
           unit: 'ms',
@@ -126,7 +126,7 @@ final class OtelFlutterStartupTracker {
     try {
       final tracer = Otel.instance.tracerProvider.getTracer(
         loggerName,
-        version: '0.0.1-alpha.1',
+        version: '0.1.0',
       );
       return tracer.startSpan(
         '$spanName.$phase',
@@ -210,7 +210,7 @@ final class OtelFlutterStartupTracker {
       try {
         final tracer = Otel.instance.tracerProvider.getTracer(
           loggerName,
-          version: '0.0.1-alpha.1',
+          version: '0.1.0',
         );
         final span = tracer.startSpan(
           '$spanName.$phase',
