@@ -492,7 +492,10 @@ void defineBatchProcessorHealthTests() {
       await Future.wait(
         List<Future<void>>.generate(10, (_) => processor.forceFlush()),
       ).timeout(outer);
-      expect(processor.queuedFlushCount, lessThanOrEqualTo(2));
+      // Exactly the stuck drain plus one follow-up: 1 would mean the callers
+      // reused the drain already running (and could miss what arrived after
+      // it started); more would mean one cycle per call.
+      expect(processor.queuedFlushCount, 2);
 
       gated.gate.complete();
       await _waitFor(() => processor.queuedFlushCount == 0);
@@ -518,7 +521,10 @@ void defineBatchProcessorHealthTests() {
       await Future.wait(
         List<Future<void>>.generate(10, (_) => processor.forceFlush()),
       ).timeout(outer);
-      expect(processor.queuedFlushCount, lessThanOrEqualTo(2));
+      // Exactly the stuck drain plus one follow-up: 1 would mean the callers
+      // reused the drain already running (and could miss what arrived after
+      // it started); more would mean one cycle per call.
+      expect(processor.queuedFlushCount, 2);
 
       gated.gate.complete();
       await _waitFor(() => processor.queuedFlushCount == 0);
