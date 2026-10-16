@@ -40,7 +40,7 @@ criada, `dev` já contendo a release.
 
 | Ref | Papel | Recebe |
 |---|---|---|
-| `dev` | integração | PRs de `fix/*`, `feat/*` (revisados por Spark/CodeRabbit) e o back-merge da `main` |
+| `dev` | integração | PRs de `fix/*`, `feat/*` (revisados pelo Spark) e o back-merge da `main` |
 | `main` | só releases | PRs de `release/vX.Y.Z` (vindos da `dev`) e `hotfix/vX.Y.Z` |
 | `release/vX.Y.Z` | branch de release | criada pelo `prepare`, contém só o commit `chore(release): vX.Y.Z` |
 | `hotfix/vX.Y.Z` | correção urgente | recortada da `main`; ver [Hotfix](#hotfix) |
@@ -145,7 +145,7 @@ CHANGELOG rápido, nunca para liberar.
 
 ### 2. Revisão e merge do PR de release
 
-É um PR como outro qualquer: CodeRabbit e `/pr-merge-gate`. O diff é só versão e
+Passa pelo `/pr-merge-gate`; o Spark não revisa PR para `main`. O diff é só versão e
 CHANGELOG. O código já foi revisado nos PRs para a `dev`. O que revisar aqui é o
 CHANGELOG e o número. **Merge com "Create a merge commit".**
 
