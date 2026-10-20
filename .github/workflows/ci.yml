@@ -8,7 +8,9 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    # Repo público: PR vindo de fork externo não roda no runner self-hosted da org.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ci-runner
 
     steps:
       - name: Checkout repository
