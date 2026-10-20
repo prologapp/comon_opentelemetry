@@ -105,7 +105,7 @@ final class OtelDioInterceptor extends Interceptor {
     }
 
     final span = Otel.instance.tracerProvider
-        .getTracer(tracerName, version: '0.1.1')
+        .getTracer(tracerName, version: '0.1.2')
         .startSpan(
           spanNameBuilder(options),
           kind: SpanKind.client,

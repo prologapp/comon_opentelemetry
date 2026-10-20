@@ -135,7 +135,7 @@ final class OtelFlutterResourceObserver {
     }
 
     return _storageGaugeCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.1.1')
+        .getMeter(loggerName, version: '0.1.2')
         .createObservableGauge(
           storageFreeMetricName,
           unit: 'By',
@@ -163,7 +163,7 @@ final class OtelFlutterResourceObserver {
     }
 
     return _batteryLevelHistogramCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.1.1')
+        .getMeter(loggerName, version: '0.1.2')
         .createHistogram(
           batteryLevelMetricName,
           unit: '%',
@@ -177,7 +177,7 @@ final class OtelFlutterResourceObserver {
     }
 
     return _batteryStateGaugeCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.1.1')
+        .getMeter(loggerName, version: '0.1.2')
         .createObservableGauge(
           batteryStateMetricName,
           description: 'Current battery state (charging/discharging/full).',
@@ -200,7 +200,7 @@ final class OtelFlutterResourceObserver {
     }
 
     return _thermalCounterCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.1.1')
+        .getMeter(loggerName, version: '0.1.2')
         .createIntCounter(
           thermalCountMetricName,
           description: 'Count of thermal state transitions.',
@@ -213,7 +213,7 @@ final class OtelFlutterResourceObserver {
     }
 
     return _rssGaugeCache ??= Otel.instance.meterProvider
-        .getMeter(loggerName, version: '0.1.1')
+        .getMeter(loggerName, version: '0.1.2')
         .createObservableGauge(
           processRssMetricName,
           unit: 'By',

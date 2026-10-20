@@ -1,3 +1,25 @@
+## 0.1.2 - 2026-10-20
+
+_Gerado por `tool/release.sh` a partir de 9 commits desde `v0.1.1`._
+
+### Bug fixes
+
+- **ci:** tira a troca de runner deste PR ([#21](https://github.com/prologapp/comon_opentelemetry/pull/21), `193a6d3`)
+- **ci:** mantém os workflows no runner hospedado do GitHub ([#21](https://github.com/prologapp/comon_opentelemetry/pull/21), `843a6fa`)
+- **otel:** processor que lança não interrompe os demais ([#21](https://github.com/prologapp/comon_opentelemetry/pull/21), `20d8af5`)
+
+### Documentation
+
+- troca o CodeRabbit pelo Spark no ritual de review ([#20](https://github.com/prologapp/comon_opentelemetry/pull/20), `9d426a7`)
+- use the canonical fvm melos command in the test totals note ([#16](https://github.com/prologapp/comon_opentelemetry/pull/16), `bd04fec`)
+- **agents:** document branch, PR and release flow in CLAUDE.md ([#16](https://github.com/prologapp/comon_opentelemetry/pull/16), `9b0ddb9`)
+
+### Build and CI
+
+- run validation on the org self-hosted runner ([#22](https://github.com/prologapp/comon_opentelemetry/pull/22), `7712cfb`)
+- volta ao runner self-hosted com trava contra PR de fork ([#21](https://github.com/prologapp/comon_opentelemetry/pull/21), `a24344c`)
+- roda workflows no runner self-hosted ci-runner ([#21](https://github.com/prologapp/comon_opentelemetry/pull/21), `ded7615`)
+
 ## 0.1.1 - 2026-10-02
 
 _Gerado por `tool/release.sh` a partir de 2 commits desde `v0.1.0`._
