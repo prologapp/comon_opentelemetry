@@ -80,7 +80,7 @@ final class OtelFlutterInteractions {
     );
 
     return Otel.instance.tracerProvider
-        .getTracer(tracerName, version: '0.1.1')
+        .getTracer(tracerName, version: '0.1.2')
         .trace(
           '$spanPrefix $interactionType $targetName',
           attributes: resolvedAttributes,
@@ -113,7 +113,7 @@ final class OtelFlutterInteractions {
     );
 
     return Otel.instance.tracerProvider
-        .getTracer(tracerName, version: '0.1.1')
+        .getTracer(tracerName, version: '0.1.2')
         .traceAsync(
           '$spanPrefix $interactionType $targetName',
           attributes: resolvedAttributes,
