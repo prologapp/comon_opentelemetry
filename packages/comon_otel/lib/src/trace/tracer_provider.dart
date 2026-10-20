@@ -125,7 +125,11 @@ final class TracerProvider {
 
     if (recording) {
       for (final processor in _spanProcessors) {
-        processor.onStart(span);
+        try {
+          processor.onStart(span);
+        } catch (_) {
+          // One failing processor must not stop the others.
+        }
       }
     }
 
@@ -135,7 +139,11 @@ final class TracerProvider {
   /// Notifies all processors that [span] has ended.
   Future<void> onEnd(Span span) async {
     for (final processor in _spanProcessors) {
-      processor.onEnd(span);
+      try {
+        processor.onEnd(span);
+      } catch (_) {
+        // One failing processor must not stop the others.
+      }
     }
   }
 

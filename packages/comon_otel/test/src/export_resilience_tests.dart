@@ -129,6 +129,62 @@ final class _ProbeLogProcessor implements LogProcessor {
   Future<void> shutdown() => probe.shutdown();
 }
 
+/// Span processor that throws from the hooks it is told to fail on.
+final class _ThrowingSpanProcessor implements SpanProcessor {
+  _ThrowingSpanProcessor({this.failOnStart = false, this.failOnEnd = false});
+
+  final bool failOnStart;
+  final bool failOnEnd;
+
+  @override
+  void onStart(Span span) {
+    if (failOnStart) {
+      throw StateError('onStart failed on purpose');
+    }
+  }
+
+  @override
+  void onEnd(Span span) {
+    if (failOnEnd) {
+      throw StateError('onEnd failed on purpose');
+    }
+  }
+
+  @override
+  Future<void> forceFlush() async {}
+
+  @override
+  Future<void> shutdown() async {}
+}
+
+final class _ThrowingLogProcessor implements LogProcessor {
+  @override
+  void onEmit(LogRecord record) {
+    throw StateError('onEmit failed on purpose');
+  }
+
+  @override
+  Future<void> forceFlush() async {}
+
+  @override
+  Future<void> shutdown() async {}
+}
+
+final class _RecordingLogProcessor implements LogProcessor {
+  final List<LogRecord> records = <LogRecord>[];
+
+  @override
+  void onEmit(LogRecord record) {
+    records.add(record);
+  }
+
+  @override
+  Future<void> forceFlush() async {}
+
+  @override
+  Future<void> shutdown() async {}
+}
+
 final class _FirstExportBlockingMetricExporter implements MetricExporter {
   final Completer<void> release = Completer<void>();
   final List<String> events = <String>[];
@@ -527,6 +583,53 @@ void defineExportResilienceTests() {
         expect(log.shutdowns, 1);
       },
     );
+
+    test('a throwing onStart does not stop the next span processor', () {
+      final recorder = _RecordingSpanProcessor();
+      final provider = TracerProvider(
+        resource: Resource.empty(),
+        spanProcessors: <SpanProcessor>[
+          _ThrowingSpanProcessor(failOnStart: true),
+          recorder,
+        ],
+        sampler: const AlwaysOnSampler(),
+      );
+
+      provider.getTracer('isolation').startSpan('op');
+
+      expect(recorder.started, hasLength(1));
+    });
+
+    test('a throwing onEnd does not stop the next span processor', () async {
+      final recorder = _RecordingSpanProcessor();
+      final provider = TracerProvider(
+        resource: Resource.empty(),
+        spanProcessors: <SpanProcessor>[
+          _ThrowingSpanProcessor(failOnEnd: true),
+          recorder,
+        ],
+        sampler: const AlwaysOnSampler(),
+      );
+      final span = provider.getTracer('isolation').startSpan('op');
+
+      // end() must not throw: a failing processor is not the host's problem.
+      await span.end();
+
+      expect(recorder.ended, hasLength(1));
+      expect(recorder.ended.single, same(span));
+    });
+
+    test('a throwing onEmit does not stop the next log processor', () {
+      final recorder = _RecordingLogProcessor();
+      final provider = LoggerProvider(
+        resource: Resource.empty(),
+        logProcessors: <LogProcessor>[_ThrowingLogProcessor(), recorder],
+      );
+
+      provider.getLogger('isolation').info('hello');
+
+      expect(recorder.records, hasLength(1));
+    });
 
     test('Otel.shutdown shuts down every signal when one fails', () async {
       final span = _ShutdownProbe();

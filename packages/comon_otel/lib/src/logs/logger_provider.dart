@@ -48,7 +48,11 @@ final class LoggerProvider {
   void emit(LogRecord record) {
     final stamped = _stampSession(record);
     for (final processor in _logProcessors) {
-      processor.onEmit(stamped);
+      try {
+        processor.onEmit(stamped);
+      } catch (_) {
+        // One failing processor must not stop the others.
+      }
     }
   }
 

@@ -40,7 +40,7 @@ final class TelemetrySdkResourceDetector implements ResourceDetector {
     return const <String, Object>{
       'telemetry.sdk.name': 'comon_otel',
       'telemetry.sdk.language': 'dart',
-      'telemetry.sdk.version': '0.1.1',
+      'telemetry.sdk.version': '0.1.2',
     };
   }
 }

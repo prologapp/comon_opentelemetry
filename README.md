@@ -28,7 +28,7 @@ melos bootstrap
 melos run analyze
 melos run test
 melos run format
-melos run publish
+melos run publish:dry-run
 ```
 
 ## Which Package Should You Use?
