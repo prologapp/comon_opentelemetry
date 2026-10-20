@@ -10,7 +10,7 @@ on:
 
 jobs:
   notify:
-    runs-on: ci-runner
+    runs-on: ubuntu-latest
     steps:
       - name: Dispatch docs update event
         uses: peter-evans/repository-dispatch@v3
