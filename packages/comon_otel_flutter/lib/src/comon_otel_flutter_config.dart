@@ -32,6 +32,7 @@ final class ComonOtelFlutterConfig {
     this.breadcrumbListener,
     this.frameworkErrorListener,
     this.platformErrorListener,
+    this.isExpectedError,
     this.routeSpanNamePrefix = 'flutter.route',
     this.screenReadySpanNamePrefix = 'flutter.screen_ready',
     this.appStartupSpanName = 'app.startup',
@@ -137,6 +138,18 @@ final class ComonOtelFlutterConfig {
 
   /// Optional listener invoked for captured platform dispatcher errors.
   final OtelFlutterErrorListener? platformErrorListener;
+
+  /// Optional predicate for errors the app throws on purpose to drive a
+  /// handled flow (e.g. an error screen). Errors it accepts, from
+  /// `FlutterError.onError` and the platform dispatcher alike, are recorded
+  /// only as a WARN log named `flutter.expected_error`, with the usual error
+  /// attributes plus `flutter.error.expected: true`: no error span, no
+  /// `flutter.platform_error`/`flutter.framework_error` log and no error
+  /// listener call. The per-group rate limit still applies. The app's error
+  /// fallback still runs and, on the platform dispatcher, its verdict is
+  /// still returned. If the predicate throws, the error is captured as a
+  /// real one. `null` (the default) treats every error as real.
+  final OtelFlutterExpectedErrorPredicate? isExpectedError;
 
   /// Prefix that was used for the long-lived route-transition span.
   ///
