@@ -14,18 +14,23 @@ import 'otel_flutter_error_rate_limiter.dart';
 /// Telemetry never breaks the host: any failure while building attributes,
 /// notifying external hooks or recording the span/log is swallowed, and the
 /// [fallback] (or [FlutterError.presentError] without one) always runs
-/// exactly once afterwards.
+/// exactly once afterwards. An error accepted by [isExpectedError] is
+/// recorded only as a `flutter.expected_error` log (see
+/// `ComonOtelFlutterConfig.isExpectedError`).
 void recordFlutterFrameworkError(
   FlutterErrorDetails details, {
   String loggerName = 'comon_otel.flutter',
   FlutterExceptionHandler? fallback,
+  OtelFlutterExpectedErrorPredicate? isExpectedError,
 }) {
   _guarded(() {
+    final expected = _isExpected(isExpectedError, details.exception);
     _captureError(
       loggerName: loggerName,
       source: 'framework',
       spanName: 'flutter.error',
       logBody: 'flutter.framework_error',
+      expected: expected,
       error: details.exception,
       stackTrace: details.stack,
       groupName: () => _errorGroupName(
@@ -34,7 +39,7 @@ void recordFlutterFrameworkError(
         context: details.context?.toDescription(),
       ),
       buildAttributes: (group) => _frameworkErrorAttributes(details, group),
-      hasHook: OtelFlutterErrorHooks.hasFrameworkErrorListener,
+      hasHook: !expected && OtelFlutterErrorHooks.hasFrameworkErrorListener,
       dispatchHook: OtelFlutterErrorHooks.dispatchFrameworkError,
       describe: details.exceptionAsString,
     );
@@ -51,25 +56,30 @@ void recordFlutterFrameworkError(
 /// Captures a platform dispatcher error and forwards it into OpenTelemetry.
 ///
 /// Same guarantee as [recordFlutterFrameworkError]: telemetry failures are
-/// swallowed and the [fallback] always runs, with its verdict returned.
+/// swallowed and the [fallback] always runs, with its verdict returned. An
+/// error accepted by [isExpectedError] is recorded only as a
+/// `flutter.expected_error` log.
 bool recordFlutterPlatformError(
   Object error,
   StackTrace stackTrace, {
   String loggerName = 'comon_otel.flutter',
   OtelPlatformErrorCallback? fallback,
+  OtelFlutterExpectedErrorPredicate? isExpectedError,
 }) {
   _guarded(() {
+    final expected = _isExpected(isExpectedError, error);
     _captureError(
       loggerName: loggerName,
       source: 'platform_dispatcher',
       spanName: 'flutter.platform_error',
       logBody: 'flutter.platform_error',
+      expected: expected,
       error: error,
       stackTrace: stackTrace,
       groupName: () =>
           _errorGroupName(source: 'platform_dispatcher', exception: error),
       buildAttributes: (group) => _platformErrorAttributes(error, group),
-      hasHook: OtelFlutterErrorHooks.hasPlatformErrorListener,
+      hasHook: !expected && OtelFlutterErrorHooks.hasPlatformErrorListener,
       dispatchHook: OtelFlutterErrorHooks.dispatchPlatformError,
       describe: error.toString,
     );
@@ -94,6 +104,7 @@ void _captureError({
   required String source,
   required String spanName,
   required String logBody,
+  required bool expected,
   required Object error,
   required StackTrace? stackTrace,
   required String Function() groupName,
@@ -138,7 +149,16 @@ void _captureError({
       );
     });
   }
-  if (export) {
+  if (export && expected) {
+    _guarded(() {
+      _recordExpectedErrorLog(
+        loggerName: loggerName,
+        attributes: attributes,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    });
+  } else if (export) {
     _guarded(() {
       _recordErrorTelemetry(
         loggerName: loggerName,
@@ -165,6 +185,22 @@ String _guardedGroupName(
     return scrubUrls(build());
   } catch (_) {
     return '$source:${error.runtimeType}';
+  }
+}
+
+/// A throwing predicate must never downgrade a real error: when in doubt, the
+/// error is treated as real.
+bool _isExpected(
+  OtelFlutterExpectedErrorPredicate? isExpectedError,
+  Object error,
+) {
+  if (isExpectedError == null) {
+    return false;
+  }
+  try {
+    return isExpectedError(error);
+  } catch (_) {
+    return false;
   }
 }
 
@@ -272,6 +308,37 @@ void _recordErrorTelemetry({
       .error(
         logBody,
         attributes: attributes,
+        error: error,
+        stackTrace: stackTrace,
+      );
+}
+
+/// Log body of an error the app expects (see
+/// `ComonOtelFlutterConfig.isExpectedError`). Kept distinct from
+/// `flutter.platform_error`/`flutter.framework_error` so queries for real
+/// failures never match it.
+const String _expectedErrorLogBody = 'flutter.expected_error';
+
+/// Records an expected error as a WARN log only: the detail (screen,
+/// breadcrumbs, stack) is kept, without an error span or an error-level log.
+void _recordExpectedErrorLog({
+  required String loggerName,
+  required Map<String, Object> attributes,
+  required Object error,
+  required StackTrace? stackTrace,
+}) {
+  if (!Otel.isInitialized) {
+    return;
+  }
+
+  Otel.instance.loggerProvider
+      .getLogger(loggerName)
+      .warn(
+        _expectedErrorLogBody,
+        attributes: <String, Object>{
+          ...attributes,
+          'flutter.error.expected': true,
+        },
         error: error,
         stackTrace: stackTrace,
       );
