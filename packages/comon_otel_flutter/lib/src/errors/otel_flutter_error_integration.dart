@@ -256,7 +256,7 @@ void _countSuppressed(String loggerName, String source) {
   if (!identical(otel, _suppressedCounterOwner)) {
     _suppressedCounterOwner = otel;
     _suppressedCounter = otel.meterProvider
-        .getMeter(loggerName, version: '0.1.2')
+        .getMeter(loggerName, version: '0.1.3')
         .createIntCounter(
           _suppressedCountMetricName,
           description:
@@ -287,7 +287,7 @@ void _recordErrorTelemetry({
 
   final tracer = Otel.instance.tracerProvider.getTracer(
     loggerName,
-    version: '0.1.2',
+    version: '0.1.3',
   );
   final span = tracer.startSpan(
     spanName,

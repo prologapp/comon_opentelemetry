@@ -1,3 +1,15 @@
+## 0.1.3 - 2026-10-27
+
+_Gerado por `tool/release.sh` a partir de 2 commits desde `v0.1.2`._
+
+### Features
+
+- **flutter:** record app-expected errors as a separate warn log ([#25](https://github.com/prologapp/comon_opentelemetry/pull/25), `5eaef4a`)
+
+### Documentation
+
+- **flutter:** document isExpectedError ([#25](https://github.com/prologapp/comon_opentelemetry/pull/25), `90c4f9a`)
+
 ## 0.1.2 - 2026-10-20
 
 _Gerado por `tool/release.sh` a partir de 9 commits desde `v0.1.1`._
