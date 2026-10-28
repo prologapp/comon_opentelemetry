@@ -18,6 +18,15 @@ Each captured error can be recorded as:
 - an error log with attributes
 - breadcrumb-enriched context from recent navigation, lifecycle, and interaction activity
 
+## Expected errors
+
+Errors the app throws on purpose to drive a handled flow (an error screen, for
+example) can be kept out of the failure signals with `isExpectedError`. An
+accepted error is recorded only as a WARN log named `flutter.expected_error`,
+marked `flutter.error.expected: true`: no error span, no
+`flutter.platform_error` / `flutter.framework_error` log and no error listener
+call. The app's error handler still runs.
+
 ## Breadcrumbs
 
 Breadcrumbs are short recent context items that help explain what happened before a failure.

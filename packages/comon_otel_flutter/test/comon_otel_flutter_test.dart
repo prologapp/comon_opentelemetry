@@ -1614,6 +1614,172 @@ void main() {
     },
   );
 
+  group('expected errors', () {
+    bool isExpected(Object error) => error is _ExpectedError;
+
+    test(
+      'a platform error the app expects is recorded only as an expected-error '
+      'log, and the fallback still runs with its verdict returned',
+      () async {
+        final hookSnapshots = <OtelFlutterErrorSnapshot>[];
+        OtelFlutterErrorHooks.configure(
+          platformErrorListener: hookSnapshots.add,
+        );
+        var fallbackCalls = 0;
+
+        final handled = recordFlutterPlatformError(
+          _ExpectedError(),
+          StackTrace.current,
+          isExpectedError: isExpected,
+          fallback: (error, stackTrace) {
+            fallbackCalls += 1;
+            return true;
+          },
+        );
+        await Otel.forceFlush();
+
+        expect(handled, isTrue);
+        expect(fallbackCalls, 1);
+        expect(
+          spanExporter.spans.where(
+            (span) => span.name == 'flutter.platform_error',
+          ),
+          isEmpty,
+        );
+        expect(
+          logExporter.logs.where((log) => log.body == 'flutter.platform_error'),
+          isEmpty,
+        );
+        expect(hookSnapshots, isEmpty);
+        _expectSingleExpectedErrorLog(
+          logExporter,
+          source: 'platform_dispatcher',
+        );
+      },
+    );
+
+    test('a framework error the app expects is recorded only as an '
+        'expected-error log, and the fallback still runs', () async {
+      final hookSnapshots = <OtelFlutterErrorSnapshot>[];
+      OtelFlutterErrorHooks.configure(
+        frameworkErrorListener: hookSnapshots.add,
+      );
+      var fallbackCalls = 0;
+
+      recordFlutterFrameworkError(
+        FlutterErrorDetails(
+          exception: _ExpectedError(),
+          stack: StackTrace.current,
+        ),
+        isExpectedError: isExpected,
+        fallback: (_) => fallbackCalls += 1,
+      );
+      await Otel.forceFlush();
+
+      expect(fallbackCalls, 1);
+      expect(
+        spanExporter.spans.where((span) => span.name == 'flutter.error'),
+        isEmpty,
+      );
+      expect(
+        logExporter.logs.where((log) => log.body == 'flutter.framework_error'),
+        isEmpty,
+      );
+      expect(hookSnapshots, isEmpty);
+      _expectSingleExpectedErrorLog(logExporter, source: 'framework');
+    });
+
+    test('unexpected errors are still recorded when a filter is set', () async {
+      final handled = recordFlutterPlatformError(
+        StateError('real crash'),
+        StackTrace.current,
+        isExpectedError: isExpected,
+        fallback: (error, stackTrace) => false,
+      );
+      await Otel.forceFlush();
+
+      expect(handled, isFalse);
+      expect(
+        spanExporter.spans.where(
+          (span) => span.name == 'flutter.platform_error',
+        ),
+        hasLength(1),
+      );
+      expect(
+        logExporter.logs.where((log) => log.body == 'flutter.platform_error'),
+        hasLength(1),
+      );
+      expect(
+        logExporter.logs.where((log) => log.body == 'flutter.expected_error'),
+        isEmpty,
+      );
+    });
+
+    test('a throwing filter never hides the error', () async {
+      var fallbackCalls = 0;
+
+      late bool handled;
+      expect(
+        () => handled = recordFlutterPlatformError(
+          StateError('real crash'),
+          StackTrace.current,
+          isExpectedError: (_) => throw StateError('filter boom'),
+          fallback: (error, stackTrace) {
+            fallbackCalls += 1;
+            return false;
+          },
+        ),
+        returnsNormally,
+      );
+      await Otel.forceFlush();
+
+      expect(handled, isFalse);
+      expect(fallbackCalls, 1);
+      expect(
+        logExporter.logs.where((log) => log.body == 'flutter.platform_error'),
+        hasLength(1),
+      );
+    });
+
+    // Only the framework path is observable here: the test binding's
+    // platformDispatcher ignores onError writes (flutter_test window.dart).
+    test('install applies the configured filter to framework errors', () async {
+      final instrumentation = ComonOtelFlutter.install(
+        config: ComonOtelFlutterConfig(
+          observeAppLifecycle: false,
+          trackNavigatorRoutes: false,
+          markFirstFrame: false,
+          isExpectedError: isExpected,
+        ),
+      );
+      addTearDown(instrumentation.dispose);
+
+      FlutterError.onError?.call(
+        FlutterErrorDetails(
+          exception: _ExpectedError(),
+          stack: StackTrace.current,
+        ),
+      );
+      FlutterError.onError?.call(
+        FlutterErrorDetails(
+          exception: StateError('real crash'),
+          stack: StackTrace.current,
+        ),
+      );
+      await Otel.forceFlush();
+
+      final errorSpans = spanExporter.spans.where(
+        (span) => span.name == 'flutter.error',
+      );
+      expect(errorSpans, hasLength(1));
+      expect(
+        errorSpans.single.attributes[SemanticAttributes.exceptionType],
+        'StateError',
+      );
+      _expectSingleExpectedErrorLog(logExporter, source: 'framework');
+    });
+  });
+
   test('platform errors include grouping and route context', () async {
     OtelFlutterRouteContext.update(
       routeName: '/profile',
@@ -2449,6 +2615,24 @@ void main() {
 final class _ToStringThrows {
   @override
   String toString() => throw StateError('toString boom');
+}
+
+/// Error the host app throws on purpose to drive a handled flow (e.g. an
+/// error screen), as opposed to a real crash.
+final class _ExpectedError implements Exception {}
+
+/// The expected error keeps its detail as a single WARN log, marked expected.
+void _expectSingleExpectedErrorLog(
+  InMemoryLogExporter exporter, {
+  required String source,
+}) {
+  final log = exporter.logs.singleWhere(
+    (log) => log.body == 'flutter.expected_error',
+  );
+  expect(log.severity, SeverityNumber.warn);
+  expect(log.attributes['flutter.error.expected'], isTrue);
+  expect(log.attributes['flutter.error.source'], source);
+  expect(log.attributes[SemanticAttributes.exceptionType], '_ExpectedError');
 }
 
 /// URL whose path carries a CPF and whose query carries an S3 signature.

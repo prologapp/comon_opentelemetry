@@ -10,6 +10,10 @@ typedef OtelFlutterBreadcrumbListener =
 typedef OtelFlutterErrorListener =
     FutureOr<void> Function(OtelFlutterErrorSnapshot snapshot);
 
+/// Tells whether an error is one the host app throws on purpose to drive a
+/// handled flow (e.g. navigating to an error screen), not a real failure.
+typedef OtelFlutterExpectedErrorPredicate = bool Function(Object error);
+
 /// Immutable snapshot of a captured Flutter error.
 final class OtelFlutterErrorSnapshot {
   /// Creates an error snapshot.

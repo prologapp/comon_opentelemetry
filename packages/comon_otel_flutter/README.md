@@ -206,6 +206,23 @@ Each captured error is recorded as:
 
 Existing error handlers are preserved and still invoked after telemetry is recorded.
 
+### Expected errors
+
+Some apps throw errors on purpose to drive a handled flow, such as opening an
+error screen. Pass `isExpectedError` so those are not counted as failures:
+
+```dart
+ComonOtelFlutterConfig(
+	isExpectedError: (error) => error is MyAppErrorState,
+)
+```
+
+An accepted error is recorded only as a WARN log named `flutter.expected_error`,
+with the usual error attributes plus `flutter.error.expected: true`. It creates
+no error span, no `flutter.platform_error` / `flutter.framework_error` log and
+no error listener call. Your error handler still runs. If the predicate throws,
+the error is treated as a real one.
+
 ## Performance
 
 The package can emit:

@@ -203,6 +203,7 @@ final class ComonOtelFlutter {
           details,
           loggerName: config.loggerName,
           fallback: flutterExceptionHandler ?? previousFlutterErrorHandler,
+          isExpectedError: config.isExpectedError,
         );
       };
     }
@@ -215,6 +216,7 @@ final class ComonOtelFlutter {
           loggerName: config.loggerName,
           fallback:
               platformDispatcherErrorCallback ?? previousPlatformErrorHandler,
+          isExpectedError: config.isExpectedError,
         );
       };
     }
